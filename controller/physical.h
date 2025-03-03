@@ -69,10 +69,6 @@ struct physical_ctx {
     size_t n_encap_ips;
     const char **encap_ips;
     struct physical_debug debug;
-
-    /* Set of port binding names that have been already reprocessed during
-     * the I-P run. */
-    struct sset reprocessed_pbs;
 };
 
 void physical_register_ovs_idl(struct ovsdb_idl *);
@@ -82,9 +78,6 @@ void physical_handle_mc_group_changes(struct physical_ctx *,
                                       struct ovn_desired_flow_table *);
 bool physical_handle_flows_for_lport(const struct sbrec_port_binding *,
                                      bool removed,
-                                     struct physical_ctx *,
-                                     struct ovn_desired_flow_table *);
-void physical_multichassis_reprocess(const struct sbrec_port_binding *,
                                      struct physical_ctx *,
                                      struct ovn_desired_flow_table *);
 #endif /* controller/physical.h */

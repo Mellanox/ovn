@@ -137,7 +137,7 @@ az_run(struct ic_context *ctx)
      * "ovn-ic-sbctl destroy avail <az>". */
     static char *az_name;
     const struct icsbrec_availability_zone *az;
-    if (ctx->ovnisb_txn && az_name && strcmp(az_name, nb_global->name)) {
+    if (az_name && strcmp(az_name, nb_global->name)) {
         ICSBREC_AVAILABILITY_ZONE_FOR_EACH (az, ctx->ovnisb_idl) {
             /* AZ name update locally need to update az in ISB. */
             if (nb_global->name[0] && !strcmp(az->name, az_name)) {
@@ -1068,10 +1068,13 @@ prefix_is_black_listed(const struct smap *nb_options,
                 continue;
             }
         } else {
-            struct in6_addr bl_mask = ipv6_create_mask(bl_plen);
-            struct in6_addr m_prefix = ipv6_addr_bitand(prefix, &bl_mask);
-            struct in6_addr m_bl_prefix = ipv6_addr_bitand(&bl_prefix,
-                                                           &bl_mask);
+            struct in6_addr mask = ipv6_create_mask(plen);
+            /* First calculate the difference between bl_prefix and prefix, so
+             * use the bl mask to ensure prefixes are correctly validated.
+             * e.g.: 2005:1734:5678::/50 is a subnet of 2005:1234::/21 */
+            struct in6_addr m_prefixes = ipv6_addr_bitand(prefix, &bl_prefix);
+            struct in6_addr m_prefix = ipv6_addr_bitand(&m_prefixes, &mask);
+            struct in6_addr m_bl_prefix = ipv6_addr_bitand(&bl_prefix, &mask);
             if (!ipv6_addr_equals(&m_prefix, &m_bl_prefix)) {
                 continue;
             }
@@ -1120,8 +1123,6 @@ add_to_routes_ad(struct hmap *routes_ad, const struct in6_addr prefix,
                  const struct nbrec_logical_router_static_route *nb_route,
                  const struct nbrec_logical_router *nb_lr)
 {
-    ovs_assert(nb_route || nb_lrp);
-
     if (route_table == NULL) {
         route_table = "";
     }
@@ -1142,15 +1143,9 @@ add_to_routes_ad(struct hmap *routes_ad, const struct in6_addr prefix,
         hmap_insert(routes_ad, &ic_route->node, hash);
     } else {
         static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 1);
-        const char *msg_fmt = "Duplicate %s route advertisement was "
-                              "suppressed! NB %s uuid: "UUID_FMT;
-        if (nb_route) {
-            VLOG_WARN_RL(&rl, msg_fmt, origin, "route",
-                         UUID_ARGS(&nb_route->header_.uuid));
-        } else {
-            VLOG_WARN_RL(&rl, msg_fmt, origin, "lrp",
-                         UUID_ARGS(&nb_lrp->header_.uuid));
-        }
+        VLOG_WARN_RL(&rl, "Duplicate route advertisement was suppressed! NB "
+                     "route uuid: "UUID_FMT,
+                     UUID_ARGS(&nb_route->header_.uuid));
     }
 }
 
@@ -2414,7 +2409,7 @@ ovn_ic_resume(struct unixctl_conn *conn, int argc OVS_UNUSED,
 {
     struct ic_state *state = state_;
     state->paused = false;
-    poll_immediate_wake();
+
     unixctl_command_reply(conn, NULL);
 }
 

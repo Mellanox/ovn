@@ -139,9 +139,10 @@ ovn_init_symtab(struct shash *symtab)
                              flags_str);
     snprintf(flags_str, sizeof flags_str, "flags[%d]", MLF_RX_FROM_TUNNEL_BIT);
     expr_symtab_add_subfield(symtab, "flags.tunnel_rx", NULL, flags_str);
-
-    snprintf(flags_str, sizeof flags_str, "flags[%d]", MLF_FROM_CTRL_BIT);
-    expr_symtab_add_subfield(symtab, "flags.from_ctrl", NULL, flags_str);
+    snprintf(flags_str, sizeof flags_str, "flags[%d]",
+             MLF_IGMP_IGMP_SNOOP_INJECT_BIT);
+    expr_symtab_add_subfield(symtab, "flags.igmp_loopback", NULL,
+                             flags_str);
 
     /* Connection tracking state. */
     expr_symtab_add_field_scoped(symtab, "ct_mark", MFF_CT_MARK, NULL, false,
@@ -246,7 +247,7 @@ ovn_init_symtab(struct shash *symtab)
     expr_symtab_add_field(symtab, "icmp4.code", MFF_ICMPV4_CODE, "icmp4",
               false);
 
-    expr_symtab_add_predicate(symtab, "igmp", "ip4.mcast && ip.proto == 2");
+    expr_symtab_add_predicate(symtab, "igmp", "ip4 && ip.proto == 2");
 
     expr_symtab_add_field(symtab, "ip6.src", MFF_IPV6_SRC, "ip6", false);
     expr_symtab_add_field(symtab, "ip6.dst", MFF_IPV6_DST, "ip6", false);
@@ -306,9 +307,6 @@ ovn_init_symtab(struct shash *symtab)
               "icmp6.type == {135, 136} && icmp6.code == 0 && ip.ttl == 255");
     expr_symtab_add_predicate(symtab, "nd_ns",
               "icmp6.type == 135 && icmp6.code == 0 && ip.ttl == 255");
-    expr_symtab_add_predicate(symtab, "nd_ns_mcast",
-              "ip6.mcast && icmp6.type == 135 && icmp6.code == 0 && "
-              "ip.ttl == 255");
     expr_symtab_add_predicate(symtab, "nd_na",
               "icmp6.type == 136 && icmp6.code == 0 && ip.ttl == 255");
     expr_symtab_add_predicate(symtab, "nd_rs",
@@ -323,12 +321,11 @@ ovn_init_symtab(struct shash *symtab)
      * (RFC 2710 and RFC 3810).
      */
     expr_symtab_add_predicate(symtab, "mldv1",
-                              "eth.mcastv6 && ip6.src == fe80::/10 && "
+                              "ip6.src == fe80::/10 && "
                               "icmp6.type == {130, 131, 132}");
     /* MLDv2 packets are sent to ff02::16 (RFC 3810, 5.2.14) */
     expr_symtab_add_predicate(symtab, "mldv2",
-                              "eth.mcastv6 && ip6.dst == ff02::16 && "
-                              "icmp6.type == 143");
+                              "ip6.dst == ff02::16 && icmp6.type == 143");
 
     expr_symtab_add_predicate(symtab, "tcp", "ip.proto == 6");
     expr_symtab_add_field(symtab, "tcp.src", MFF_TCP_SRC, "tcp", false);

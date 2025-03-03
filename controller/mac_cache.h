@@ -47,12 +47,9 @@ struct mac_cache_threshold {
     uint64_t value;
     /* Statistics dump period. */
     uint64_t dump_period;
-    /* How long to wait between two database updates. */
-    uint64_t cooldown_period;
 };
 
 struct mac_cache_mb_data {
-    uint64_t cookie;
     uint32_t port_key;
     uint32_t dp_key;
     struct in6_addr ip;
@@ -63,8 +60,8 @@ struct mac_cache_mac_binding {
     struct hmap_node hmap_node;
     /* Common data to identify MAC binding. */
     struct mac_cache_mb_data data;
-    /* Reference to the SB MAC binding record (Might be NULL). */
-    const struct sbrec_mac_binding *sbrec;
+    /* Reference to the SB MAC binding record. */
+    const struct sbrec_mac_binding *sbrec_mb;
 };
 
 struct mac_cache_fdb_data {
@@ -90,36 +87,24 @@ bool mac_cache_threshold_replace(struct mac_cache_data *data,
                                  const struct sbrec_datapath_binding *dp,
                                  enum mac_cache_type type);
 void mac_cache_thresholds_clear(struct mac_cache_data *data);
-
-static inline void
-mac_cache_mac_binding_data_init(struct mac_cache_mb_data *data,
-                                uint32_t dp_key, uint32_t port_key,
-                                struct in6_addr ip, struct eth_addr mac)
-{
-    *data = (struct mac_cache_mb_data) {
-        .cookie = 0,
-        .dp_key = (dp_key),
-        .port_key = (port_key),
-        .ip = (ip),
-        .mac = (mac),
-    };
-}
-
 void mac_cache_mac_binding_add(struct mac_cache_data *data,
-                                const struct sbrec_mac_binding *mb);
+                                const struct sbrec_mac_binding *mb,
+                                struct ovsdb_idl_index *sbrec_pb_by_name);
 struct mac_cache_mac_binding *
 mac_cachce_mac_binding_find(struct mac_cache_data *data,
-                            const struct sbrec_mac_binding *mb);
+                            const struct sbrec_mac_binding *mb,
+                            struct ovsdb_idl_index *sbrec_pb_by_name);
 void mac_cache_mac_binding_remove(struct mac_cache_data *data,
-                                  const struct sbrec_mac_binding *mb);
+                                  const struct sbrec_mac_binding *mb,
+                                  struct ovsdb_idl_index *sbrec_pb_by_name);
 void mac_cache_mac_bindings_clear(struct mac_cache_data *data);
-void mac_cache_mac_bindings_to_string(const struct hmap *map,
-                                      struct ds *out_data);
+bool mac_cache_sb_mac_binding_updated(const struct sbrec_mac_binding *mb);
 
 void mac_cache_fdb_add(struct mac_cache_data *data,
                        const struct sbrec_fdb *fdb, struct uuid dp_uuid);
 void mac_cache_fdb_remove(struct mac_cache_data *data,
                           const struct sbrec_fdb *fdb);
+bool mac_cache_sb_fdb_updated(const struct sbrec_fdb *fdb);
 void mac_cache_fdbs_clear(struct mac_cache_data *data);
 
 void

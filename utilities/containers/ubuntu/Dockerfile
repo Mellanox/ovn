@@ -32,7 +32,6 @@ RUN apt update -y \
         llvm-dev \
         ncat \
         net-tools \
-        nftables \
         python3-dev \
         python3-pip \
         selinux-policy-dev \
@@ -44,14 +43,41 @@ RUN apt update -y \
     && \
     apt clean
 
-WORKDIR /workspace
+# Compile sparse from source
+WORKDIR /workspace/sparse
+
+RUN git clone git://git.kernel.org/pub/scm/devel/sparse/sparse.git \
+    /workspace/sparse \
+    && \
+    make -j4 PREFIX=/usr HAVE_LLVM= HAVE_SQLITE= install
+
+# Compile OpenBFDD from source
+WORKDIR /workspace/OpenBFDD
 
 COPY $CONTAINERS_PATH/openbfdd.patch /tmp/openbfdd.patch
 
+RUN git clone https://github.com/dyninc/OpenBFDD.git \
+    /workspace/OpenBFDD \
+    && \
+    git apply /tmp/openbfdd.patch \
+    && \
+    ./autogen.sh \
+    && \
+    ./configure --enable-silent-rules \
+    && \
+    make \
+    && \
+    make install
+
+WORKDIR /workspace
+
 COPY $CONTAINERS_PATH/py-requirements.txt /tmp/py-requirements.txt
 
-COPY $CONTAINERS_PATH/prepare.sh /tmp/prepare.sh
-
-RUN /tmp/prepare.sh
+# Update and install pip dependencies
+RUN python3 -m pip install --upgrade pip \
+    && \
+    python3 -m pip install wheel \
+    && \
+    python3 -m pip install -r /tmp/py-requirements.txt
 
 CMD ["/sbin/init"]

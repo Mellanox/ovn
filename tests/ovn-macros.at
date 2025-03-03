@@ -284,7 +284,7 @@ ovn_start () {
     ovn_init_db ovn-sb $1; ovn-sbctl init
     ovn_init_db ovn-nb $1; ovn-nbctl init
     if test -n "$1"; then
-        check ovn-nbctl set NB_Global . name=$1
+        ovn-nbctl set NB_Global . name=$1
     fi
 
     ovn_start_northd primary $AZ
@@ -314,7 +314,7 @@ ovn_start () {
     fi
 
     if test -n "$AZ"; then
-        check ovn-nbctl --wait=sb sync || exit $?
+        ovn-nbctl --wait=sb sync || exit $?
 
         echo "${msg_prefix}starting ovn-ic"
         mkdir "$ovs_base"/$d_prefix/ic
@@ -532,15 +532,6 @@ OVS_START_SHELL_HELPERS
 check() {
     echo "$@"
     AT_CHECK(["$@"])
-}
-
-# Runs COMMAND and checks that it does not print anything else than uuid as output.
-# It also fails if the output is empty.
-check_uuid() {
-    echo "$@"
-    output=$("${@}")
-    AT_CHECK([echo "$output" | grep .], [0], [ignore], [], [echo "Unexpected empty output: check_uuid is expecting a UUID"])
-    AT_CHECK([echo "$output" | grep -vE '^[[0-9a-fA-F]]{8}-[[0-9a-fA-F]]{4}-[[0-9a-fA-F]]{4}-[[0-9a-fA-F]]{4}-[[0-9a-fA-F]]{12}$'], [1])
 }
 
 parse_db() {
@@ -925,21 +916,6 @@ store_ip6_multicast_pkt() {
     echo ${packet} >> ${outfile}
 }
 
-hex_to_mac() {
-    mac_hex=$1
-    echo $mac_hex | sed 's/../&:/g;s/:$//'
-}
-
-send_garp() {
-    local hv=$1 inport=$2 op=$3 eth_src=$4 eth_dst=$5 spa=$6 tpa=$7
-
-    local packet=$(fmt_pkt "Ether(dst='${eth_dst}', src='${eth_src}')/ \
-                      ARP(op=$op, hwsrc='${eth_src}', hwdst='${eth_src}', \
-                      psrc='${spa}', pdst='${tpa}')")
-    echo "Sending GARP($op) $eth_src $eth_dst $spa $tpa packet=$packet on $hv"
-    check as $hv ovs-appctl netdev-dummy/receive $inport $packet
-}
-
 # Wrapper on top of ovn-trace, stripping some things and storing the trace
 # output to a file called 'trace'.  For now it strips the rows starting
 # with a '#'.  This should correspond to the flow key and might be displayed
@@ -1053,18 +1029,16 @@ stop_ovsdb_controller_updates() {
   TCP_PORT=$1
   echo Stopping updates from ovn-controller to ovsdb using port $TCP_PORT
   on_exit 'nft list tables | grep ovn-test && nft delete table ip ovn-test'
-  # Report the test as skipped if proper nft related packages are not installed.
-  AT_SKIP_IF([! which nft])
-  AT_CHECK([nft add table ip ovn-test])
-  AT_CHECK([nft 'add chain ip ovn-test INPUT { type filter hook input priority 0; policy accept; }'])
-  AT_CHECK([nft add rule ip ovn-test INPUT tcp dport $TCP_PORT counter drop])
+  nft add table ip ovn-test
+  nft 'add chain ip ovn-test INPUT { type filter hook input priority 0; policy accept; }'
+  nft add rule ip ovn-test INPUT tcp dport $TCP_PORT counter drop
 }
 
 restart_ovsdb_controller_updates() {
   TCP_PORT=$1
   echo Restarting updates from ovn-controller to ovsdb
-  AT_CHECK([nft list ruleset | grep $TCP_PORT], [0], [ignore])
-  AT_CHECK([nft delete table ip ovn-test])
+  nft list ruleset | grep $TCP_PORT
+  nft delete table ip ovn-test
 }
 
 trim_zeros() {
@@ -1127,13 +1101,4 @@ m4_define([OVN_CHECK_SCAPY_EDNS_CLIENT_SUBNET_SUPPORT],
 [
     AT_SKIP_IF([test $HAVE_SCAPY = no])
     AT_SKIP_IF([! echo "from scapy.layers.dns import EDNS0ClientSubnet" | python 2>&1 > /dev/null])
-])
-
-m4_define([OVN_CONTROLLER_EXIT],
-  [TMPPID=$(cat $1/ovn-controller.pid)
-   AT_CHECK([as $1 ovn-appctl -t ovn-controller exit --restart])
-   # Make sure ovn-controller stopped so that a future restart will not fail.
-   # Checking debug/status is running is not enough as there might be a small race condition.
-   echo "Waiting for pid $TMPPID"
-   OVS_WAIT_WHILE([kill -0 $TMPPID 2>/dev/null])
 ])

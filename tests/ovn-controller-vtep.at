@@ -149,14 +149,14 @@ AT_CHECK([ovn-sbctl --columns=vtep_logical_switches list Chassis | cut -d ':' -f
 
 # unbinds all ports from lswitch0.
 AT_CHECK([vtep-ctl unbind-ls br-vtep p0 100 -- unbind-ls br-vtep p1 300])
-OVS_WAIT_UNTIL([test -z "`ovn-sbctl list Chassis | grep -- lswitch0`"])
+OVS_WAIT_UNTIL([test -z "`ovn-sbctl list Chassis | grep -- br-vtep_lswitch0`"])
 AT_CHECK([ovn-sbctl --columns=vtep_logical_switches list Chassis | cut -d ':' -f2 | tr -d ' ' ], [0], [dnl
 [[lswitch1]]
 ])
 
 # unbinds all ports from lswitch1.
 AT_CHECK([vtep-ctl unbind-ls br-vtep p0 300])
-OVS_WAIT_UNTIL([test -z "`ovn-sbctl list Chassis | grep -- lswitch1`"])
+OVS_WAIT_UNTIL([test -z "`ovn-sbctl list Chassis | grep -- br-vtep_lswitch1`"])
 AT_CHECK([ovn-sbctl --columns=vtep_logical_switches list Chassis | cut -d ':' -f2 | tr -d ' '], [0], [dnl
 [[]]
 ])
@@ -169,7 +169,7 @@ AT_CLEANUP
 AT_SETUP([ovn-controller-vtep - binding 1])
 ovn_start
 OVN_CONTROLLER_VTEP_START
-check ovn-nbctl ls-add br-test
+ovn-nbctl ls-add br-test
 
 AS_BOX([add logical switch 'lswitch0' and vlan_bindings])
 AT_CHECK([vtep-ctl add-ls lswitch0 -- bind-ls br-vtep p0 100 lswitch0 -- bind-ls br-vtep p1 300 lswitch0])
@@ -245,7 +245,7 @@ AT_CLEANUP
 AT_SETUP([ovn-controller-vtep - binding 2])
 ovn_start
 OVN_CONTROLLER_VTEP_START
-check ovn-nbctl ls-add br-test
+ovn-nbctl ls-add br-test
 
 # adds logical switch 'lswitch0' and vlan_bindings.
 AT_CHECK([vtep-ctl add-ls lswitch0 -- bind-ls br-vtep p0 100 lswitch0])
@@ -286,7 +286,7 @@ AT_CLEANUP
 AT_SETUP([ovn-controller-vtep - vtep-lswitch])
 ovn_start
 OVN_CONTROLLER_VTEP_START
-check ovn-nbctl ls-add br-test
+ovn-nbctl ls-add br-test
 
 # creates the logical switch in vtep and adds the corresponding logical
 # port to 'br-test'.
@@ -340,7 +340,7 @@ AT_CLEANUP
 AT_SETUP([ovn-controller-vtep - vtep-macs 1])
 ovn_start
 OVN_CONTROLLER_VTEP_START
-check ovn-nbctl ls-add br-test
+ovn-nbctl ls-add br-test
 
 # creates a simple logical network with the vtep device and a fake hv chassis
 # 'ch0'.
@@ -444,7 +444,7 @@ AT_CLEANUP
 AT_SETUP([ovn-controller-vtep - vtep-macs 2])
 ovn_start
 OVN_CONTROLLER_VTEP_START
-check ovn-nbctl ls-add br-test
+ovn-nbctl ls-add br-test
 
 # creates a simple logical network with the vtep device and a fake hv chassis
 # 'ch0'.
@@ -513,7 +513,7 @@ AT_CLEANUP
 AT_SETUP([ovn-controller-vtep - vtep-Mcast_Macs_Remote])
 ovn_start
 OVN_CONTROLLER_VTEP_START
-check ovn-nbctl ls-add br-test
+ovn-nbctl ls-add br-test
 
 # creates a simple logical network with the vtep device and a fake hv chassis
 # 'ch0'.
@@ -580,9 +580,9 @@ sim_add hv1
 as hv1
 ovs-vsctl -- add-br br-phys
 ovn_attach n1 br-phys 192.168.0.1
-check ovn-nbctl ls-add lsw0
-check ovn-nbctl lsp-add lsw0 lsp0
-check ovn-nbctl lsp-set-addresses lsp0 f0:00:00:00:00:01
+ovn-nbctl ls-add lsw0
+ovn-nbctl lsp-add lsw0 lsp0
+ovn-nbctl lsp-set-addresses lsp0 f0:00:00:00:00:01
 ovs-vsctl add-port br-int vif0 -- set Interface vif0 external-ids:iface-id=lsp0
 
 

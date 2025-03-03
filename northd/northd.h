@@ -362,6 +362,12 @@ ovn_datapath_is_stale(const struct ovn_datapath *od)
     return !od->nbr && !od->nbs;
 };
 
+static inline bool
+ovn_datapath_is_transit_switch(const struct ovn_datapath *od)
+{
+    return od->tunnel_key >= OVN_MIN_DP_KEY_GLOBAL;
+}
+
 /* Pipeline stages. */
 
 /* The two purposes for which ovn-northd uses OVN logical datapaths. */
@@ -573,7 +579,6 @@ struct ovn_port {
     const struct nbrec_logical_router_port *nbrp; /* May be NULL. */
 
     struct lport_addresses lrp_networks;
-    bool prefix_delegation; /* True if IPv6 prefix delegation enabled. */
 
     /* Logical port multicast data. */
     struct mcast_port_info mcast_info;

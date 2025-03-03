@@ -31,7 +31,6 @@ The below guides provide information on contributing to OVN itself.
    :maxdepth: 2
 
    submitting-patches
-   inclusive-language
    backporting-patches
    coding-style
    documentation-style

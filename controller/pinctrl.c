@@ -189,7 +189,6 @@ static void init_buffered_packets_ctx(void);
 static void destroy_buffered_packets_ctx(void);
 static void
 run_buffered_binding(const struct sbrec_mac_binding_table *mac_binding_table,
-                     const struct hmap *local_datapaths,
                      struct ovsdb_idl_index *sbrec_port_binding_by_key,
                      struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                      struct ovsdb_idl_index *sbrec_port_binding_by_name,
@@ -393,8 +392,6 @@ static void wait_put_fdbs(struct ovsdb_idl_txn *ovnsb_idl_txn);
 static void pinctrl_handle_put_fdb(const struct flow *md,
                                    const struct flow *headers)
                                    OVS_REQUIRES(pinctrl_mutex);
-
-static void set_from_ctrl_flag_in_pkt_metadata(struct ofputil_packet_in *);
 
 COVERAGE_DEFINE(pinctrl_drop_put_mac_binding);
 COVERAGE_DEFINE(pinctrl_drop_buffered_packets_map);
@@ -663,6 +660,8 @@ pinctrl_forward_pkt(struct rconn *swconn, int64_t dp_key,
     put_load(dp_key, MFF_LOG_DATAPATH, 0, 64, &ofpacts);
     put_load(in_port_key, MFF_LOG_INPORT, 0, 32, &ofpacts);
     put_load(out_port_key, MFF_LOG_OUTPORT, 0, 32, &ofpacts);
+    /* Avoid re-injecting packet already consumed. */
+    put_load(1, MFF_LOG_FLAGS, MLF_IGMP_IGMP_SNOOP_INJECT_BIT, 1, &ofpacts);
 
     struct ofpact_resubmit *resubmit = ofpact_put_RESUBMIT(&ofpacts);
     resubmit->in_port = OFPP_CONTROLLER;
@@ -2058,6 +2057,11 @@ pinctrl_handle_put_dhcp_opts(
     switch (*in_dhcp_msg_type) {
     case DHCP_MSG_DISCOVER:
         msg_type = DHCP_MSG_OFFER;
+        if (in_flow->nw_dst != htonl(INADDR_BROADCAST)) {
+            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+            VLOG_WARN_RL(&rl, "DHCP DISCOVER must be Broadcast");
+            goto exit;
+        }
         break;
     case DHCP_MSG_REQUEST: {
         msg_type = DHCP_MSG_ACK;
@@ -3158,10 +3162,6 @@ exit:
         union mf_subvalue sv;
         sv.u8_val = success;
         mf_write_subfield(&dst, &sv, &pin->flow_metadata);
-
-        /* Indicate that this packet is from ovn-controller. */
-        set_from_ctrl_flag_in_pkt_metadata(pin);
-
     }
     queue_msg(swconn, ofputil_encode_resume(pin, continuation, proto));
     dp_packet_uninit(pkt_out_ptr);
@@ -3648,8 +3648,7 @@ pinctrl_run(struct ovsdb_idl_txn *ovnsb_idl_txn,
                   sbrec_port_binding_by_key,
                   sbrec_igmp_groups,
                   sbrec_ip_multicast_opts);
-    run_buffered_binding(mac_binding_table, local_datapaths,
-                         sbrec_port_binding_by_key,
+    run_buffered_binding(mac_binding_table, sbrec_port_binding_by_key,
                          sbrec_datapath_binding_by_key,
                          sbrec_port_binding_by_name,
                          sbrec_mac_binding_by_lport_ip);
@@ -3690,7 +3689,6 @@ struct ipv6_ra_state {
     struct ipv6_ra_config *config;
     int64_t port_key;
     int64_t metadata;
-    bool preserved;
     bool delete_me;
 };
 
@@ -3773,8 +3771,7 @@ ipv6_ra_update_config(const struct sbrec_port_binding *pb)
     }
 
     const char *prefixes = smap_get(&pb->options, "ipv6_ra_prefixes");
-    if (prefixes && *prefixes != '\0' &&
-        !extract_ip_addresses(prefixes, &config->prefixes)) {
+    if (prefixes && !extract_ip_addresses(prefixes, &config->prefixes)) {
         VLOG_WARN("Invalid IPv6 prefixes: %s", prefixes);
         goto fail;
     }
@@ -4022,9 +4019,6 @@ ipv6_ra_send(struct rconn *swconn, struct ipv6_ra_state *ra)
     put_load(dp_key, MFF_LOG_DATAPATH, 0, 64, &ofpacts);
     put_load(port_key, MFF_LOG_INPORT, 0, 32, &ofpacts);
     put_load(1, MFF_LOG_FLAGS, MLF_LOCAL_ONLY_BIT, 1, &ofpacts);
-    if (ra->preserved) {
-        put_load(1, MFF_LOG_FLAGS, MLF_OVERRIDE_LOCAL_ONLY_BIT, 1, &ofpacts);
-    }
     struct ofpact_resubmit *resubmit = ofpact_put_RESUBMIT(&ofpacts);
     resubmit->in_port = OFPP_CONTROLLER;
     resubmit->table_id = OFTABLE_LOG_INGRESS_PIPELINE;
@@ -4135,11 +4129,8 @@ prepare_ipv6_ras(const struct shash *local_active_ports_ras,
          * router port is connected to. The RA is injected
          * into that logical switch port.
          */
-        ra->port_key  = peer->tunnel_key;
-        ra->metadata  = peer->datapath->tunnel_key;
-        ra->preserved = (!strcmp(pb->type,"l2gateway") ||
-                        !strcmp(pb->type,"l3gateway") ||
-                        !strcmp(pb->type,"chassisredirect"));
+        ra->port_key = peer->tunnel_key;
+        ra->metadata = peer->datapath->tunnel_key;
         ra->delete_me = false;
 
         /* pinctrl_handler thread will send the IPv6 RAs. */
@@ -4320,9 +4311,6 @@ mac_binding_add_to_sb(struct ovsdb_idl_txn *ovnsb_idl_txn,
         /* For backward compatibility check if timestamp column is available
          * in SB DB. */
         if (pinctrl.mac_binding_can_timestamp) {
-            VLOG_DBG("Setting MAC binding timestamp for "
-                     "ip:%s mac:%s port:%s to %lld",
-                     b->ip, b->mac, logical_port, time_wall_msec());
             sbrec_mac_binding_set_timestamp(b, time_wall_msec());
         }
     }
@@ -4430,7 +4418,6 @@ run_put_mac_bindings(struct ovsdb_idl_txn *ovnsb_idl_txn,
 
 static void
 run_buffered_binding(const struct sbrec_mac_binding_table *mac_binding_table,
-                     const struct hmap *local_datapaths,
                      struct ovsdb_idl_index *sbrec_port_binding_by_key,
                      struct ovsdb_idl_index *sbrec_datapath_binding_by_key,
                      struct ovsdb_idl_index *sbrec_port_binding_by_name,
@@ -4446,14 +4433,6 @@ run_buffered_binding(const struct sbrec_mac_binding_table *mac_binding_table,
 
     const struct sbrec_mac_binding *smb;
     SBREC_MAC_BINDING_TABLE_FOR_EACH_TRACKED (smb, mac_binding_table) {
-        if (sbrec_mac_binding_is_deleted(smb)) {
-            continue;
-        }
-
-        if (!get_local_datapath(local_datapaths, smb->datapath->tunnel_key)) {
-            continue;
-        }
-
         const struct sbrec_port_binding *pb = lport_lookup_by_name(
             sbrec_port_binding_by_name, smb->logical_port);
         if (!pb || !pb->datapath) {
@@ -5832,10 +5811,6 @@ get_localnet_vifs_l3gwports(
             if (!pb || pb->chassis != chassis) {
                 continue;
             }
-            if (!iface_rec->link_state ||
-                    strcmp(iface_rec->link_state, "up")) {
-                continue;
-            }
             struct local_datapath *ld
                 = get_local_datapath(local_datapaths,
                                      pb->datapath->tunnel_key);
@@ -6767,9 +6742,6 @@ struct svc_monitor {
     long long int timestamp;
     bool is_ip6;
 
-    struct eth_addr src_mac;
-    struct in6_addr src_ip;
-
     long long int wait_time;
     long long int next_send_time;
 
@@ -6963,9 +6935,6 @@ sync_svc_monitors(struct ovsdb_idl_txn *ovnsb_idl_txn,
                 smap_get_int(&svc_mon->options, "failure_count", 1);
             svc_mon->n_success = 0;
             svc_mon->n_failures = 0;
-
-            eth_addr_from_string(sb_svc_mon->src_mac, &svc_mon->src_mac);
-            ip46_parse(sb_svc_mon->src_ip, &svc_mon->src_ip);
 
             hmap_insert(&svc_monitors_map, &svc_mon->hmap_node, hash);
             ovs_list_push_back(&svc_monitors, &svc_mon->list_node);
@@ -7725,14 +7694,19 @@ svc_monitor_send_tcp_health_check__(struct rconn *swconn,
     struct dp_packet packet;
     dp_packet_use_stub(&packet, packet_stub, sizeof packet_stub);
 
+    struct eth_addr eth_src;
+    eth_addr_from_string(svc_mon->sb_svc_mon->src_mac, &eth_src);
     if (svc_mon->is_ip6) {
-        pinctrl_compose_ipv6(&packet, svc_mon->src_mac, svc_mon->ea,
-                             &svc_mon->src_ip, &svc_mon->ip, IPPROTO_TCP,
+        struct in6_addr ip6_src;
+        ipv6_parse(svc_mon->sb_svc_mon->src_ip, &ip6_src);
+        pinctrl_compose_ipv6(&packet, eth_src, svc_mon->ea,
+                             &ip6_src, &svc_mon->ip, IPPROTO_TCP,
                              63, TCP_HEADER_LEN);
     } else {
-        pinctrl_compose_ipv4(&packet, svc_mon->src_mac, svc_mon->ea,
-                             in6_addr_get_mapped_ipv4(&svc_mon->src_ip),
-                             in6_addr_get_mapped_ipv4(&svc_mon->ip),
+        ovs_be32 ip4_src;
+        ip_parse(svc_mon->sb_svc_mon->src_ip, &ip4_src);
+        pinctrl_compose_ipv4(&packet, eth_src, svc_mon->ea,
+                             ip4_src, in6_addr_get_mapped_ipv4(&svc_mon->ip),
                              IPPROTO_TCP, 63, TCP_HEADER_LEN);
     }
 
@@ -7788,18 +7762,24 @@ svc_monitor_send_udp_health_check(struct rconn *swconn,
                                   struct svc_monitor *svc_mon,
                                   ovs_be16 udp_src)
 {
+    struct eth_addr eth_src;
+    eth_addr_from_string(svc_mon->sb_svc_mon->src_mac, &eth_src);
+
     uint64_t packet_stub[128 / 8];
     struct dp_packet packet;
     dp_packet_use_stub(&packet, packet_stub, sizeof packet_stub);
 
     if (svc_mon->is_ip6) {
-        pinctrl_compose_ipv6(&packet, svc_mon->src_mac, svc_mon->ea,
-                             &svc_mon->src_ip, &svc_mon->ip, IPPROTO_UDP,
+        struct in6_addr ip6_src;
+        ipv6_parse(svc_mon->sb_svc_mon->src_ip, &ip6_src);
+        pinctrl_compose_ipv6(&packet, eth_src, svc_mon->ea,
+                             &ip6_src, &svc_mon->ip, IPPROTO_UDP,
                              63, UDP_HEADER_LEN + 8);
     } else {
-        pinctrl_compose_ipv4(&packet, svc_mon->src_mac, svc_mon->ea,
-                             in6_addr_get_mapped_ipv4(&svc_mon->src_ip),
-                             in6_addr_get_mapped_ipv4(&svc_mon->ip),
+        ovs_be32 ip4_src;
+        ip_parse(svc_mon->sb_svc_mon->src_ip, &ip4_src);
+        pinctrl_compose_ipv4(&packet, eth_src, svc_mon->ea,
+                             ip4_src, in6_addr_get_mapped_ipv4(&svc_mon->ip),
                              IPPROTO_UDP, 63, UDP_HEADER_LEN + 8);
     }
 
@@ -8474,25 +8454,4 @@ pinctrl_handle_put_fdb(const struct flow *md, const struct flow *headers)
 
     ovn_fdb_add(&put_fdbs, dp_key, headers->dl_src, port_key);
     notify_pinctrl_main();
-}
-
-/* This function sets the register bit 'MLF_FROM_CTRL_BIT'
- * in the register 'MFF_LOG_FLAGS' to indicate that this packet
- * is generated/sent by ovn-controller.
- * ovn-northd can add logical flows to match on "flags.from_ctrl".
- */
-static void
-set_from_ctrl_flag_in_pkt_metadata(struct ofputil_packet_in *pin)
-{
-    const struct mf_field *f = mf_from_id(MFF_LOG_FLAGS);
-
-    struct mf_subfield dst = {
-        .field = f,
-        .ofs = MLF_FROM_CTRL_BIT,
-        .n_bits = 1,
-    };
-
-    union mf_subvalue sv;
-    sv.u8_val = 1;
-    mf_write_subfield(&dst, &sv, &pin->flow_metadata);
 }

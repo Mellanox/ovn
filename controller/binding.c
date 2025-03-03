@@ -244,7 +244,6 @@ add_or_del_qos_port(const char *ovn_port, bool add)
 static bool
 add_ovs_qos_table_entry(struct ovsdb_idl_txn *ovs_idl_txn,
                         const struct ovsrec_port *port,
-                        const struct ovsrec_interface *iface,
                         unsigned long long min_rate,
                         unsigned long long max_rate,
                         unsigned long long burst,
@@ -263,19 +262,7 @@ add_ovs_qos_table_entry(struct ovsdb_idl_txn *ovs_idl_txn,
         qos = ovsrec_qos_insert(ovs_idl_txn);
         ovsrec_qos_set_type(qos, OVN_QOS_TYPE);
         ovsrec_port_set_qos(port, qos);
-
-        const char *drv_name = smap_get_def(&iface->status, "driver_name", "");
-        /* Link speed for virtual interfaces (e.g. veth or tap is inaccurate),
-         * so use default value for them while rely on link speed for real
-         * NICs. */
-        if (!strcmp(drv_name, "veth") || !strcmp(drv_name, "tap") ||
-            !iface->n_link_speed) {
-            smap_add_format(&other_config, "max-rate", "%lld",
-                            OVN_QOS_MAX_RATE);
-        } else {
-            smap_add_format(&other_config, "max-rate", "%lld",
-                            (long long int) iface->link_speed[0]);
-        }
+        smap_add_format(&other_config, "max-rate", "%lld", OVN_QOS_MAX_RATE);
         ovsrec_qos_set_other_config(qos, &other_config);
         smap_clear(&other_config);
 
@@ -404,9 +391,9 @@ configure_qos(const struct sbrec_port_binding *pb,
         }
         if (iface) {
             /* Add new QoS entries. */
-            if (add_ovs_qos_table_entry(ovs_idl_txn, port, iface,
-                                        min_rate, max_rate, burst,
-                                        queue_id, pb->logical_port)) {
+            if (add_ovs_qos_table_entry(ovs_idl_txn, port, min_rate,
+                                    max_rate, burst, queue_id,
+                                    pb->logical_port)) {
                 if (!q) {
                     q = xzalloc(sizeof *q);
                     hmap_insert(qos_map, &q->node, hash);
@@ -982,6 +969,7 @@ local_binding_set_up(struct shash *local_bindings, const char *pb_name,
 
     if (!sb_readonly && lbinding && b_lport && b_lport->pb->n_up &&
             !b_lport->pb->up[0] && b_lport->pb->chassis == chassis_rec) {
+        VLOG_INFO("Setting lport %s up in Southbound", pb_name);
         binding_lport_set_up(b_lport, sb_readonly);
         LIST_FOR_EACH (b_lport, list_node, &lbinding->binding_lports) {
             binding_lport_set_up(b_lport, sb_readonly);
@@ -1215,7 +1203,7 @@ claimed_lport_set_up(const struct sbrec_port_binding *pb,
 {
     bool up = true;
     if (!parent_pb || (parent_pb->n_up && parent_pb->up[0])) {
-        if (pb->n_up && !pb->up[0]) {
+        if (pb->n_up) {
             VLOG_INFO("Setting lport %s up in Southbound",
                       pb->logical_port);
             sbrec_port_binding_set_up(pb, &up, 1);
@@ -1326,9 +1314,9 @@ claim_lport(const struct sbrec_port_binding *pb,
             bool sb_readonly, bool is_vif,
             struct hmap *tracked_datapaths,
             struct if_status_mgr *if_mgr,
-            struct sset *postponed_ports,
-            enum can_bind can_bind)
+            struct sset *postponed_ports)
 {
+    enum can_bind can_bind = lport_can_bind_on_this_chassis(chassis_rec, pb);
     bool update_tracked = false;
 
     if (can_bind == CAN_BIND_AS_MAIN) {
@@ -1527,7 +1515,7 @@ release_binding_lport(const struct sbrec_chassis *chassis_rec,
 
 static bool
 consider_vif_lport_(const struct sbrec_port_binding *pb,
-                    enum can_bind can_bind,
+                    bool can_bind,
                     struct binding_ctx_in *b_ctx_in,
                     struct binding_ctx_out *b_ctx_out,
                     struct binding_lport *b_lport)
@@ -1545,7 +1533,7 @@ consider_vif_lport_(const struct sbrec_port_binding *pb,
                              !b_ctx_in->ovnsb_idl_txn,
                              !parent_pb, b_ctx_out->tracked_dp_bindings,
                              b_ctx_out->if_mgr,
-                             b_ctx_out->postponed_ports, can_bind)) {
+                             b_ctx_out->postponed_ports)) {
                 return false;
             }
 
@@ -1607,8 +1595,7 @@ consider_vif_lport(const struct sbrec_port_binding *pb,
                    struct binding_ctx_out *b_ctx_out,
                    struct local_binding *lbinding)
 {
-    enum can_bind can_bind =
-        lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec, pb);
+    bool can_bind = lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec, pb);
 
     if (!lbinding) {
         lbinding = local_binding_find(&b_ctx_out->lbinding_data->bindings,
@@ -1723,10 +1710,9 @@ consider_container_lport(const struct sbrec_port_binding *pb,
 
     ovs_assert(parent_b_lport && parent_b_lport->pb);
     /* cannot bind to this chassis if the parent_port cannot be bounded. */
-    enum can_bind can_bind =
-        lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec, pb) ?
-         lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec,
-                                        parent_b_lport->pb) : CANNOT_BIND;
+    bool can_bind = lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec,
+                                                   parent_b_lport->pb) &&
+                    lport_can_bind_on_this_chassis(b_ctx_in->chassis_rec, pb);
 
     return consider_vif_lport_(pb, can_bind, b_ctx_in, b_ctx_out,
                                container_b_lport);
@@ -1776,7 +1762,7 @@ consider_virtual_lport(const struct sbrec_port_binding *pb,
         }
     }
 
-    if (!consider_vif_lport_(pb, CAN_BIND_AS_MAIN, b_ctx_in, b_ctx_out,
+    if (!consider_vif_lport_(pb, true, b_ctx_in, b_ctx_out,
                              virtual_b_lport)) {
         return false;
     }
@@ -1850,13 +1836,11 @@ consider_nonvif_lport_(const struct sbrec_port_binding *pb,
                            b_ctx_out->tracked_dp_bindings);
 
         update_related_lport(pb, b_ctx_out);
-        enum can_bind can_bind = lport_can_bind_on_this_chassis(
-                                     b_ctx_in->chassis_rec, pb);
         return claim_lport(pb, NULL, b_ctx_in->chassis_rec, NULL,
                            !b_ctx_in->ovnsb_idl_txn, false,
                            b_ctx_out->tracked_dp_bindings,
                            b_ctx_out->if_mgr,
-                           b_ctx_out->postponed_ports, can_bind);
+                           b_ctx_out->postponed_ports);
     }
 
     if (pb->chassis == b_ctx_in->chassis_rec
@@ -2808,8 +2792,7 @@ handle_updated_vif_lport(const struct sbrec_port_binding *pb,
     bool now_claimed = (pb->chassis == b_ctx_in->chassis_rec);
 
     if (lport_type == LP_VIRTUAL || lport_type == LP_CONTAINER ||
-            (claimed == now_claimed &&
-             !is_additional_chassis(pb, b_ctx_in->chassis_rec))) {
+            claimed == now_claimed) {
         return true;
     }
 
@@ -3565,7 +3548,6 @@ binding_lport_set_up(struct binding_lport *b_lport, bool sb_readonly)
         return;
     }
 
-    VLOG_INFO("Setting lport %s up in Southbound", b_lport->pb->logical_port);
     bool up = true;
     sbrec_port_binding_set_up(b_lport->pb, &up, 1);
 }

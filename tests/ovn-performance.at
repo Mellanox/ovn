@@ -238,9 +238,6 @@ for i in `seq 1 5`; do
     as hv$i
     ovs-vsctl add-br br-phys
     ovn_attach n1 br-phys 192.168.0.$i
-    # Do not postpone patch ports related changes, as they may occur more or less anywere within the test,
-    # hence causing unexpected recomputes.
-    check ovn-appctl -t ovn-controller debug/ignore-startup-delay
     if [[ $i -ge 3 ]] ; then
         ovs-vsctl add-br br-ex
         ovs-vsctl set open . external_ids:ovn-bridge-mappings="public:br-ex"
@@ -335,12 +332,12 @@ for i in 1 2; do
     OVN_CONTROLLER_EXPECT_NO_HIT(
         [hv1 hv2], [lflow_run],
         [ovn-nbctl wait-until Logical_Switch_Port $lp dynamic_addresses!=[[]] &&
-         check ovn-nbctl --wait=hv sync]
+         ovn-nbctl --wait=hv sync]
     )
     OVN_CONTROLLER_EXPECT_NO_HIT(
         [hv1 hv2], [lflow_run],
         [ovn-nbctl get Logical_Switch_Port $lp dynamic_addresses &&
-         check ovn-nbctl --wait=hv sync]
+         ovn-nbctl --wait=hv sync]
     )
 
     # Add address set $as
@@ -367,8 +364,8 @@ for i in 1 2; do
     OVN_CONTROLLER_EXPECT_NO_HIT(
         [hv$i hv$j], [lflow_run],
         [as hv$i ovs-vsctl add-port br-int $vif -- set Interface $vif external-ids:iface-id=$lp &&
-         check ovn-nbctl wait-until Logical_Switch_Port $lp 'up=true' &&
-         check ovn-nbctl --wait=hv sync]
+         ovn-nbctl wait-until Logical_Switch_Port $lp 'up=true' &&
+         ovn-nbctl --wait=hv sync]
     )
 
     # Delete and recreate $lp to make it unbind and rebind multiple times, and
@@ -377,14 +374,14 @@ for i in 1 2; do
         OVN_CONTROLLER_EXPECT_NO_HIT(
             [hv$i hv$j], [lflow_run],
             [as hv$i ovs-vsctl set Interface $vif external-ids:iface-id=xxxx &&
-             check ovn-nbctl wait-until Logical_Switch_Port $lp 'up=false' &&
-             check ovn-nbctl --wait=hv sync]
+             ovn-nbctl wait-until Logical_Switch_Port $lp 'up=false' &&
+             ovn-nbctl --wait=hv sync]
         )
         OVN_CONTROLLER_EXPECT_NO_HIT(
             [hv$i hv$j], [lflow_run],
             [as hv$i ovs-vsctl set Interface $vif external-ids:iface-id=$lp &&
-             check ovn-nbctl wait-until Logical_Switch_Port $lp 'up=true' &&
-             check ovn-nbctl --wait=hv sync]
+             ovn-nbctl wait-until Logical_Switch_Port $lp 'up=true' &&
+             ovn-nbctl --wait=hv sync]
         )
     done
 done

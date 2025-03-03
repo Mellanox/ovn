@@ -98,7 +98,6 @@ static unixctl_cb_func debug_resume_execution;
 static unixctl_cb_func debug_status_execution;
 static unixctl_cb_func debug_dump_local_bindings;
 static unixctl_cb_func debug_dump_local_template_vars;
-static unixctl_cb_func debug_dump_local_mac_bindings;
 static unixctl_cb_func debug_dump_lflow_conj_ids;
 static unixctl_cb_func lflow_cache_flush_cmd;
 static unixctl_cb_func lflow_cache_show_stats_cmd;
@@ -245,11 +244,6 @@ update_sb_monitors(struct ovsdb_idl *ovnsb_idl,
     ovsdb_idl_condition_add_clause_true(&ldpg);
 
     if (monitor_all) {
-        /* Monitor all Southbound tables unconditionally.  Do that even for
-         * tables that could be easily filtered by chassis name (like
-         * Chassis_Private).  That's because the current ovsdb-server
-         * implementation uses a cache whose efficiency significantly
-         * decreases when monitor conditions are present. */
         ovsdb_idl_condition_add_clause_true(&pb);
         ovsdb_idl_condition_add_clause_true(&lf);
         ovsdb_idl_condition_add_clause_true(&mb);
@@ -492,76 +486,6 @@ create_br_datapath(struct ovsdb_idl_txn *ovs_idl_txn,
     return dp;
 }
 
-#define N_FLOW_TABLES 255
-
-static void
-update_flow_table_prefixes(struct ovsdb_idl_txn *ovs_idl_txn,
-                           const struct ovsrec_bridge *br_int)
-{
-    size_t max_prefixes = ovs_features_max_flow_table_prefixes_get();
-    struct ds ds = DS_EMPTY_INITIALIZER;
-    const char *prefixes[] = {
-        "ip_src", "ip_dst", "ipv6_src", "ipv6_dst",
-    };
-    struct ovsrec_flow_table *ft;
-    size_t i;
-
-    /* We must not attempt setting more prefixes than our IDL supports.
-     * Note: This should be a build time assertion, but IDL structures
-     * are not defined as constants. */
-    ovs_assert(
-        ARRAY_SIZE(prefixes) <=
-        ovsrec_flow_table_columns[OVSREC_FLOW_TABLE_COL_PREFIXES].type.n_max);
-
-    if (!max_prefixes) {
-        /* Not discovered yet. */
-        return;
-    }
-
-    max_prefixes = MIN(max_prefixes, ARRAY_SIZE(prefixes));
-    if (br_int->n_flow_tables == N_FLOW_TABLES &&
-        br_int->value_flow_tables[0]->n_prefixes == max_prefixes) {
-        /* Already up to date.  Ideally, we would check every table,
-         * but it seems excessive. */
-        return;
-    }
-
-    for (i = 1; i < br_int->n_flow_tables; i++) {
-        if (br_int->value_flow_tables[i] != br_int->value_flow_tables[0]) {
-            break;
-        }
-    }
-    if (i == N_FLOW_TABLES) {
-        /* Correct number of flow tables and all pointing to the same row. */
-        ft = br_int->value_flow_tables[0];
-    } else {
-        /* Unexpected configuration.  Let's create a new flow table row.
-         * Old ones will be garbage collected by the database. */
-        struct ovsrec_flow_table *values[N_FLOW_TABLES];
-        int64_t keys[N_FLOW_TABLES];
-
-        ft = ovsrec_flow_table_insert(ovs_idl_txn);
-        for (i = 0; i < ARRAY_SIZE(values); i++) {
-            keys[i] = i;
-            values[i] = ft;
-        }
-        ovsrec_bridge_set_flow_tables(br_int, keys, values,
-                                      ARRAY_SIZE(values));
-    }
-
-    ds_put_cstr(&ds, "Setting flow table prefixes:");
-    for (i = 0 ; i < max_prefixes; i++) {
-        ds_put_char(&ds, ' ');
-        ds_put_cstr(&ds, prefixes[i]);
-        ds_put_char(&ds, ',');
-    }
-    ds_chomp(&ds, ',');
-    VLOG_INFO("%s.", ds_cstr_ro(&ds));
-    ds_destroy(&ds);
-
-    ovsrec_flow_table_set_prefixes(ft, prefixes, max_prefixes);
-}
-
 static const struct ovsrec_bridge *
 get_br_int(const struct ovsrec_bridge_table *bridge_table,
            const struct ovsrec_open_vswitch_table *ovs_table)
@@ -638,8 +562,6 @@ process_br_int(struct ovsdb_idl_txn *ovs_idl_txn,
                                                     datapath_type);
                 }
             }
-
-            update_flow_table_prefixes(ovs_idl_txn, br_int);
         }
     }
     *br_int_ = br_int;
@@ -809,7 +731,7 @@ update_ct_zones(const struct sset *local_lports,
     const char *user;
     struct sset all_users = SSET_INITIALIZER(&all_users);
     struct simap req_snat_zones = SIMAP_INITIALIZER(&req_snat_zones);
-    unsigned long *unreq_snat_zones_map = bitmap_allocate(MAX_CT_ZONES);
+    unsigned long unreq_snat_zones_map[BITMAP_N_LONGS(MAX_CT_ZONES)];
     struct simap unreq_snat_zones = SIMAP_INITIALIZER(&unreq_snat_zones);
 
     const char *local_lport;
@@ -920,7 +842,6 @@ update_ct_zones(const struct sset *local_lports,
     simap_destroy(&req_snat_zones);
     simap_destroy(&unreq_snat_zones);
     sset_destroy(&all_users);
-    bitmap_free(unreq_snat_zones_map);
 }
 
 static void
@@ -1189,11 +1110,8 @@ ctrl_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_ports);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_name);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_fail_mode);
-    ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_flow_tables);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_other_config);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_bridge_col_external_ids);
-    ovsdb_idl_add_table(ovs_idl, &ovsrec_table_flow_table);
-    ovsdb_idl_add_column(ovs_idl, &ovsrec_flow_table_col_prefixes);
     ovsdb_idl_add_table(ovs_idl, &ovsrec_table_ssl);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_ssl_col_bootstrap_ca_cert);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_ssl_col_ca_cert);
@@ -1209,7 +1127,6 @@ ctrl_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     ovsdb_idl_add_table(ovs_idl, &ovsrec_table_queue);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_queue_col_other_config);
     ovsdb_idl_add_column(ovs_idl, &ovsrec_queue_col_external_ids);
-    ovsdb_idl_add_column(ovs_idl, &ovsrec_interface_col_link_state);
 
     chassis_register_ovs_idl(ovs_idl);
     encaps_register_ovs_idl(ovs_idl);
@@ -1226,7 +1143,6 @@ ctrl_register_ovs_idl(struct ovsdb_idl *ovs_idl)
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_options);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_ofport);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_external_ids);
-    ovsdb_idl_track_add_column(ovs_idl, &ovsrec_interface_col_link_speed);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_port_col_name);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_port_col_interfaces);
     ovsdb_idl_track_add_column(ovs_idl, &ovsrec_port_col_external_ids);
@@ -3046,7 +2962,7 @@ lb_data_local_lb_add(struct ed_type_lb_data *lb_data,
 
 static void
 lb_data_local_lb_remove(struct ed_type_lb_data *lb_data,
-                        struct ovn_controller_lb *lb)
+                        struct ovn_controller_lb *lb, bool tracked)
 {
     const struct uuid *uuid = &lb->slb->header_.uuid;
 
@@ -3055,8 +2971,12 @@ lb_data_local_lb_remove(struct ed_type_lb_data *lb_data,
 
     lb_data_removed_five_tuples_add(lb_data, lb);
 
-    hmap_insert(&lb_data->old_lbs, &lb->hmap_node, uuid_hash(uuid));
-    uuidset_insert(&lb_data->deleted, uuid);
+    if (tracked) {
+        hmap_insert(&lb_data->old_lbs, &lb->hmap_node, uuid_hash(uuid));
+        uuidset_insert(&lb_data->deleted, uuid);
+    } else {
+        ovn_controller_lb_destroy(lb);
+    }
 }
 
 static bool
@@ -3081,7 +3001,7 @@ lb_data_handle_changed_ref(enum objdep_type type, const char *res_name,
             continue;
         }
 
-        lb_data_local_lb_remove(lb_data, lb);
+        lb_data_local_lb_remove(lb_data, lb, true);
 
         const struct sbrec_load_balancer *sbrec_lb =
             sbrec_load_balancer_table_get_for_uuid(ctx_in->lb_table, uuid);
@@ -3127,13 +3047,9 @@ en_lb_data_run(struct engine_node *node, void *data)
     const struct sbrec_load_balancer_table *lb_table =
         EN_OVSDB_GET(engine_get_input("SB_load_balancer", node));
 
-    objdep_mgr_clear(&lb_data->deps_mgr);
-
     struct ovn_controller_lb *lb;
     HMAP_FOR_EACH_SAFE (lb, hmap_node, &lb_data->local_lbs) {
-        hmap_remove(&lb_data->local_lbs, &lb->hmap_node);
-        lb_data_removed_five_tuples_add(lb_data, lb);
-        ovn_controller_lb_destroy(lb);
+        lb_data_local_lb_remove(lb_data, lb, false);
     }
 
     const struct sbrec_load_balancer *sbrec_lb;
@@ -3171,7 +3087,7 @@ lb_data_sb_load_balancer_handler(struct engine_node *node, void *data)
                 continue;
             }
 
-            lb_data_local_lb_remove(lb_data, lb);
+            lb_data_local_lb_remove(lb_data, lb, true);
         }
 
         if (sbrec_load_balancer_is_deleted(sbrec_lb) ||
@@ -3361,7 +3277,8 @@ en_lb_data_cleanup(void *data)
 static void
 mac_cache_mb_handle_for_datapath(struct mac_cache_data *data,
                                  const struct sbrec_datapath_binding *dp,
-                                 struct ovsdb_idl_index *sbrec_mb_by_dp)
+                                 struct ovsdb_idl_index *sbrec_mb_by_dp,
+                                 struct ovsdb_idl_index *sbrec_pb_by_name)
 {
     bool has_threshold =
             mac_cache_threshold_replace(data, dp, MAC_CACHE_MAC_BINDING);
@@ -3373,9 +3290,9 @@ mac_cache_mb_handle_for_datapath(struct mac_cache_data *data,
     const struct sbrec_mac_binding *mb;
     SBREC_MAC_BINDING_FOR_EACH_EQUAL (mb, mb_index_row, sbrec_mb_by_dp) {
         if (has_threshold) {
-            mac_cache_mac_binding_add(data, mb);
+            mac_cache_mac_binding_add(data, mb, sbrec_pb_by_name);
         } else {
-            mac_cache_mac_binding_remove(data, mb);
+            mac_cache_mac_binding_remove(data, mb, sbrec_pb_by_name);
         }
     }
 
@@ -3430,6 +3347,10 @@ en_mac_cache_run(struct engine_node *node, void *data)
             EN_OVSDB_GET(engine_get_input("SB_mac_binding", node));
     const struct sbrec_fdb_table *fdb_table =
             EN_OVSDB_GET(engine_get_input("SB_fdb", node));
+    struct ovsdb_idl_index *sbrec_pb_by_name =
+            engine_ovsdb_node_get_index(
+                    engine_get_input("SB_port_binding", node),
+                    "name");
 
     mac_cache_thresholds_clear(cache_data);
     mac_cache_mac_bindings_clear(cache_data);
@@ -3444,7 +3365,7 @@ en_mac_cache_run(struct engine_node *node, void *data)
 
         if (mac_cache_threshold_add(cache_data, sbrec_mb->datapath,
                                     MAC_CACHE_MAC_BINDING)) {
-            mac_cache_mac_binding_add(cache_data, sbrec_mb);
+            mac_cache_mac_binding_add(cache_data, sbrec_mb, sbrec_pb_by_name);
         }
     }
 
@@ -3475,12 +3396,22 @@ mac_cache_sb_mac_binding_handler(struct engine_node *node, void *data)
             engine_get_input_data("runtime_data", node);
     const struct sbrec_mac_binding_table *mb_table =
             EN_OVSDB_GET(engine_get_input("SB_mac_binding", node));
+    struct ovsdb_idl_index *sbrec_pb_by_name =
+            engine_ovsdb_node_get_index(
+                    engine_get_input("SB_port_binding", node),
+                    "name");
+
     size_t previous_size = hmap_count(&cache_data->mac_bindings);
 
     const struct sbrec_mac_binding *sbrec_mb;
     SBREC_MAC_BINDING_TABLE_FOR_EACH_TRACKED (sbrec_mb, mb_table) {
+        if (!mac_cache_sb_mac_binding_updated(sbrec_mb)) {
+            continue;
+        }
+
         if (!sbrec_mac_binding_is_new(sbrec_mb)) {
-            mac_cache_mac_binding_remove(cache_data, sbrec_mb);
+            mac_cache_mac_binding_remove(cache_data, sbrec_mb,
+                                         sbrec_pb_by_name);
         }
 
         if (sbrec_mac_binding_is_deleted(sbrec_mb) ||
@@ -3491,7 +3422,7 @@ mac_cache_sb_mac_binding_handler(struct engine_node *node, void *data)
 
         if (mac_cache_threshold_add(cache_data, sbrec_mb->datapath,
                                     MAC_CACHE_MAC_BINDING)) {
-            mac_cache_mac_binding_add(cache_data, sbrec_mb);
+            mac_cache_mac_binding_add(cache_data, sbrec_mb, sbrec_pb_by_name);
         }
     }
 
@@ -3516,6 +3447,10 @@ mac_cache_sb_fdb_handler(struct engine_node *node, void *data)
     struct local_datapath *local_dp;
     const struct sbrec_fdb *sbrec_fdb;
     SBREC_FDB_TABLE_FOR_EACH_TRACKED (sbrec_fdb, fdb_table) {
+        if (!mac_cache_sb_fdb_updated(sbrec_fdb)) {
+            continue;
+        }
+
         if (!sbrec_fdb_is_new(sbrec_fdb)) {
             mac_cache_fdb_remove(cache_data, sbrec_fdb);
         }
@@ -3550,6 +3485,10 @@ mac_cache_runtime_data_handler(struct engine_node *node, void *data OVS_UNUSED)
             engine_ovsdb_node_get_index(
                     engine_get_input("SB_mac_binding", node),
                     "datapath");
+    struct ovsdb_idl_index *sbrec_pb_by_name =
+            engine_ovsdb_node_get_index(
+                    engine_get_input("SB_port_binding", node),
+                    "name");
     struct ovsdb_idl_index *sbrec_fdb_by_dp_key =
             engine_ovsdb_node_get_index(
                     engine_get_input("SB_fdb", node),
@@ -3570,7 +3509,7 @@ mac_cache_runtime_data_handler(struct engine_node *node, void *data OVS_UNUSED)
         }
 
         mac_cache_mb_handle_for_datapath(cache_data, tdp->dp,
-                                         sbrec_mb_by_dp);
+                                         sbrec_mb_by_dp, sbrec_pb_by_name);
 
         mac_cache_fdb_handle_for_datapath(cache_data, tdp->dp,
                                           sbrec_fdb_by_dp_key);
@@ -3596,6 +3535,10 @@ mac_cache_sb_datapath_binding_handler(struct engine_node *node, void *data)
             engine_ovsdb_node_get_index(
                     engine_get_input("SB_mac_binding", node),
                     "datapath");
+    struct ovsdb_idl_index *sbrec_pb_by_name =
+            engine_ovsdb_node_get_index(
+                    engine_get_input("SB_port_binding", node),
+                    "name");
     struct ovsdb_idl_index *sbrec_fdb_by_dp_key =
             engine_ovsdb_node_get_index(
                     engine_get_input("SB_fdb", node),
@@ -3614,7 +3557,7 @@ mac_cache_sb_datapath_binding_handler(struct engine_node *node, void *data)
         }
 
         mac_cache_mb_handle_for_datapath(cache_data, sbrec_dp,
-                                         sbrec_mb_by_dp);
+                                         sbrec_mb_by_dp, sbrec_pb_by_name);
 
         mac_cache_fdb_handle_for_datapath(cache_data, sbrec_dp,
                                           sbrec_fdb_by_dp_key);
@@ -4083,8 +4026,6 @@ en_lflow_output_run(struct engine_node *node, void *data)
         EN_OVSDB_GET(engine_get_input("OVS_bridge", node));
     const struct ovsrec_bridge *br_int = get_br_int(bridge_table, ovs_table);
     const char *chassis_id = get_ovs_chassis_id(ovs_table);
-    const struct ovsrec_flow_sample_collector_set_table *flow_collector_table =
-        EN_OVSDB_GET(engine_get_input("OVS_flow_sample_collector_set", node));
 
     struct ovsdb_idl_index *sbrec_chassis_by_name =
         engine_ovsdb_node_get_index(
@@ -4097,17 +4038,6 @@ en_lflow_output_run(struct engine_node *node, void *data)
     }
 
     ovs_assert(br_int && chassis);
-
-    const struct ovsrec_flow_sample_collector_set *set;
-    OVSREC_FLOW_SAMPLE_COLLECTOR_SET_TABLE_FOR_EACH (set,
-                                                    flow_collector_table) {
-        if (set->bridge == br_int) {
-            struct ed_type_lflow_output *lfo = data;
-            flow_collector_ids_clear(&lfo->collector_ids);
-            flow_collector_ids_init_from_table(&lfo->collector_ids,
-                                               flow_collector_table);
-        }
-    }
 
     struct ed_type_lflow_output *fo = data;
     struct ovn_desired_flow_table *lflow_table = &fo->flow_table;
@@ -4723,7 +4653,6 @@ static void init_physical_ctx(struct engine_node *node,
     p_ctx->if_mgr = ctrl_ctx->if_mgr;
 
     pflow_output_get_debug(node, &p_ctx->debug);
-    sset_init(&p_ctx->reprocessed_pbs);
 }
 
 static void
@@ -4733,7 +4662,6 @@ destroy_physical_ctx(struct physical_ctx *p_ctx)
         free((char *)(p_ctx->encap_ips[i]));
     }
     free(p_ctx->encap_ips);
-    sset_destroy(&p_ctx->reprocessed_pbs);
 }
 
 static void *
@@ -4806,7 +4734,22 @@ pflow_output_if_status_mgr_handler(struct engine_node *node,
         }
         if (pb->n_additional_chassis) {
             /* Update flows for all ports in datapath. */
-            physical_multichassis_reprocess(pb, &p_ctx, &pfo->flow_table);
+            struct sbrec_port_binding *target =
+                sbrec_port_binding_index_init_row(
+                    p_ctx.sbrec_port_binding_by_datapath);
+            sbrec_port_binding_index_set_datapath(target, pb->datapath);
+
+            const struct sbrec_port_binding *binding;
+            SBREC_PORT_BINDING_FOR_EACH_EQUAL (
+                    binding, target, p_ctx.sbrec_port_binding_by_datapath) {
+                bool removed = sbrec_port_binding_is_deleted(binding);
+                if (!physical_handle_flows_for_lport(binding, removed, &p_ctx,
+                                                     &pfo->flow_table)) {
+                    destroy_physical_ctx(&p_ctx);
+                    return false;
+                }
+            }
+            sbrec_port_binding_index_destroy_row(target);
         } else {
             /* If any multichassis ports, update flows for the port. */
             bool removed = sbrec_port_binding_is_deleted(pb);
@@ -4842,11 +4785,6 @@ pflow_output_sb_port_binding_handler(struct engine_node *node,
      */
     const struct sbrec_port_binding *pb;
     SBREC_PORT_BINDING_TABLE_FOR_EACH_TRACKED (pb, p_ctx.port_binding_table) {
-        /* Trigger a full recompute if type column is updated. */
-        if (sbrec_port_binding_is_updated(pb, SBREC_PORT_BINDING_COL_TYPE)) {
-            destroy_physical_ctx(&p_ctx);
-            return false;
-        }
         bool removed = sbrec_port_binding_is_deleted(pb);
         if (!physical_handle_flows_for_lport(pb, removed, &p_ctx,
                                              &pfo->flow_table)) {
@@ -5257,12 +5195,6 @@ main(int argc, char *argv[])
                          &sbrec_chassis_private_col_nb_cfg);
     ovsdb_idl_omit_alert(ovnsb_idl_loop.idl,
                          &sbrec_chassis_private_col_nb_cfg_timestamp);
-    /* Omit the timestamp columns of the MAC_Binding and FDB tables.
-     * ovn-controller doesn't need to react to changes in timestamp
-     * values (it does read them to implement aging).  Therefore we
-     * can disable change tracking and alerting for these columns. */
-    ovsdb_idl_omit_alert(ovnsb_idl_loop.idl, &sbrec_mac_binding_col_timestamp);
-    ovsdb_idl_omit_alert(ovnsb_idl_loop.idl, &sbrec_fdb_col_timestamp);
 
     /* Omit the external_ids column of all the tables except for -
      *  - DNS. pinctrl.c uses the external_ids column of DNS,
@@ -5647,10 +5579,6 @@ main(int argc, char *argv[])
                              debug_dump_local_template_vars,
                              &template_vars_data->local_templates);
 
-    unixctl_command_register("debug/dump-mac-bindings", "", 0, 0,
-                             debug_dump_local_mac_bindings,
-                             &mac_cache_data->mac_bindings);
-
     unixctl_command_register("debug/ignore-startup-delay", "", 0, 0,
                              debug_ignore_startup_delay, NULL);
 
@@ -5746,15 +5674,15 @@ main(int argc, char *argv[])
             ovsrec_open_vswitch_table_get(ovs_idl_loop.idl);
         const struct ovsrec_bridge *br_int = NULL;
         const struct ovsrec_datapath *br_int_dp = NULL;
-        const struct ovsrec_open_vswitch *cfg =
-            ovsrec_open_vswitch_table_first(ovs_table);
         process_br_int(ovs_idl_txn, bridge_table, ovs_table, &br_int,
                        ovsrec_server_has_datapath_table(ovs_idl_loop.idl)
                        ? &br_int_dp
                        : NULL);
 
         /* Enable ACL matching for double tagged traffic. */
-        if (ovs_idl_txn && cfg) {
+        if (ovs_idl_txn) {
+            const struct ovsrec_open_vswitch *cfg =
+                ovsrec_open_vswitch_table_first(ovs_table);
             int vlan_limit = smap_get_int(
                 &cfg->other_config, "vlan-limit", -1);
             if (vlan_limit != 0) {
@@ -5770,7 +5698,7 @@ main(int argc, char *argv[])
         }
 
         if (ovsdb_idl_has_ever_connected(ovnsb_idl_loop.idl) &&
-            northd_version_match && cfg) {
+            northd_version_match) {
 
             /* Unconditionally remove all deleted lflows from the lflow
              * cache.
@@ -5804,18 +5732,20 @@ main(int argc, char *argv[])
             if (ovs_idl_txn
                 && ovs_feature_support_run(br_int_dp ?
                                            &br_int_dp->capabilities : NULL,
-                                           br_int ? br_int->name : NULL,
-                                           ovs_remote)) {
+                                           br_int ? br_int->name : NULL)) {
                 VLOG_INFO("OVS feature set changed, force recompute.");
                 engine_set_force_recompute(true);
+                if (ovs_feature_set_discovered()) {
+                    uint32_t max_groups = ovs_feature_max_select_groups_get();
+                    uint32_t max_meters = ovs_feature_max_meters_get();
+                    struct ed_type_lflow_output *lflow_out_data =
+                        engine_get_internal_data(&en_lflow_output);
 
-                struct ed_type_lflow_output *lflow_out_data =
-                    engine_get_internal_data(&en_lflow_output);
-
-                ovn_extend_table_reinit(&lflow_out_data->group_table,
-                                        ovs_feature_max_select_groups_get());
-                ovn_extend_table_reinit(&lflow_out_data->meter_table,
-                                        ovs_feature_max_meters_get());
+                    ovn_extend_table_reinit(&lflow_out_data->group_table,
+                                            max_groups);
+                    ovn_extend_table_reinit(&lflow_out_data->meter_table,
+                                            max_meters);
+                }
             }
 
             if (br_int) {
@@ -5842,33 +5772,34 @@ main(int argc, char *argv[])
 
                     stopwatch_start(CONTROLLER_LOOP_STOPWATCH_NAME,
                                     time_msec());
-
-                    /* Recompute is not allowed in following cases: */
-                    /* 1. No ovnsb_idl_txn  */
-                    /* Even if there's no SB DB transaction available,
-                    * try to run the engine so that we can handle any
-                    * incremental changes that don't require a recompute.
-                    * If a recompute is required, the engine will cancel,
-                    * triggerring a full run in the next iteration.
-                    */
-                    /* 2. ofctrl_has_backlog */
-                    /* When there are in-flight messages pending to
-                     * ovs-vswitchd, we should hold on recomputing so
-                     * that the previous flow installations won't be
-                     * delayed.  However, we still want to try if
-                     * recompute is not needed and we can quickly
-                     * incrementally process the new changes, to avoid
-                     * unnecessarily forced recomputes later on.  This
-                     * is because the OVSDB change tracker cannot
-                     * preserve tracked changes across iterations.  If
-                     * change tracking is improved, we can simply skip
-                     * this round of engine_run and continue processing
-                     * acculated changes incrementally later when
-                     * ofctrl_has_backlog() returns false. */
-
-                    bool recompute_allowed = (ovnsb_idl_txn &&
-                                              !ofctrl_has_backlog());
-                    engine_run(recompute_allowed);
+                    if (ovnsb_idl_txn) {
+                        if (ofctrl_has_backlog()) {
+                            /* When there are in-flight messages pending to
+                             * ovs-vswitchd, we should hold on recomputing so
+                             * that the previous flow installations won't be
+                             * delayed.  However, we still want to try if
+                             * recompute is not needed and we can quickly
+                             * incrementally process the new changes, to avoid
+                             * unnecessarily forced recomputes later on.  This
+                             * is because the OVSDB change tracker cannot
+                             * preserve tracked changes across iterations.  If
+                             * change tracking is improved, we can simply skip
+                             * this round of engine_run and continue processing
+                             * acculated changes incrementally later when
+                             * ofctrl_has_backlog() returns false. */
+                            engine_run(false);
+                        } else {
+                            engine_run(true);
+                        }
+                    } else {
+                        /* Even if there's no SB DB transaction available,
+                         * try to run the engine so that we can handle any
+                         * incremental changes that don't require a recompute.
+                         * If a recompute is required, the engine will abort,
+                         * triggerring a full run in the next iteration.
+                         */
+                        engine_run(false);
+                    }
                     stopwatch_stop(CONTROLLER_LOOP_STOPWATCH_NAME,
                                    time_msec());
                     if (engine_has_updated()) {
@@ -5989,7 +5920,6 @@ main(int argc, char *argv[])
                         }
                     }
 
-                    mac_cache_data = engine_get_data(&en_mac_cache);
                     if (mac_cache_data) {
                         statctrl_update(br_int->name);
                         statctrl_run(ovnsb_idl_txn, mac_cache_data);
@@ -6575,19 +6505,6 @@ debug_dump_local_template_vars(struct unixctl_conn *conn, int argc OVS_UNUSED,
     local_templates_to_string(local_vars, &tv_str);
     unixctl_command_reply(conn, ds_cstr(&tv_str));
     ds_destroy(&tv_str);
-}
-
-static void
-debug_dump_local_mac_bindings(struct unixctl_conn *conn, int argc OVS_UNUSED,
-                               const char *argv[] OVS_UNUSED,
-                               void *mac_bindings)
-{
-    struct ds mb_str = DS_EMPTY_INITIALIZER;
-
-    ds_put_cstr(&mb_str, "Local MAC bindings:\n");
-    mac_cache_mac_bindings_to_string(mac_bindings, &mb_str);
-    unixctl_command_reply(conn, ds_cstr(&mb_str));
-    ds_destroy(&mb_str);
 }
 
 static void

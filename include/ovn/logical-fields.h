@@ -60,11 +60,6 @@ enum ovn_controller_event {
 #define MFF_LOG_LB_AFF_MATCH_LR_IP6_ADDR    MFF_XXREG1
 #define MFF_LOG_LB_AFF_MATCH_PORT           MFF_REG8
 
-#define MFF_LOG_CT_ORIG_NW_DST_ADDR         MFF_REG1   /* REG_ORIG_DIP_IPV4 */
-#define MFF_LOG_CT_ORIG_IP6_DST_ADDR        MFF_XXREG1 /* REG_ORIG_DIP_IPV6 */
-#define MFF_LOG_CT_ORIG_TP_DST_PORT         MFF_REG2   /* REG_ORIG_TP_DPORT
-                                                        * (bits 0..15). */
-
 void ovn_init_symtab(struct shash *symtab);
 
 /* MFF_LOG_FLAGS_REG bit assignments */
@@ -87,8 +82,7 @@ enum mff_log_flags_bits {
     MLF_LOCALNET_BIT = 15,
     MLF_RX_FROM_TUNNEL_BIT = 16,
     MLF_ICMP_SNAT_BIT = 17,
-    MLF_OVERRIDE_LOCAL_ONLY_BIT = 18,
-    MLF_FROM_CTRL_BIT = 19,
+    MLF_IGMP_IGMP_SNOOP_INJECT_BIT = 18,
 };
 
 /* MFF_LOG_FLAGS_REG flag assignments */
@@ -145,7 +139,7 @@ enum mff_log_flags {
 
     MLF_ICMP_SNAT = (1 << MLF_ICMP_SNAT_BIT),
 
-    MLF_OVERRIDE_LOCAL_ONLY = (1 << MLF_OVERRIDE_LOCAL_ONLY_BIT),
+    MLF_IGMP_IGMP_SNOOP = (1 << MLF_IGMP_IGMP_SNOOP_INJECT_BIT),
 };
 
 /* OVN logical fields

@@ -21,7 +21,6 @@ struct chassis_features {
     bool ls_dpg_column;
     bool ct_commit_nat_v2;
     bool ct_commit_to_zone;
-    bool ct_next_zone;
 };
 
 struct global_config_tracked_data {

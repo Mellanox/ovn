@@ -1,53 +1,5 @@
 AT_BANNER([ovn-controller])
 
-m4_divert_push([PREPARE_TESTS])
-# Checks if the provided engine node recomputed or not
-# and if it computed or not.
-# 1st argument is the simulated hypervisor name.
-# 2nd argument is the engine node.
-# 3rd argument is the expected recompute state.
-#   Possible values are - "norecompute" and "recompute".
-# 4th argument is the expected compute state.
-#   Possible values are - "nocompute" and "compute".
-#
-# Eg. 'check_controller_engine_stats hv1 logical_flow_output recompute nocompute'
-# will verify that if the lflow engine node recompute stat is > 0 and
-# compute stat is equal to 0.  It fails otherwise.
-check_controller_engine_stats() {
-  hv=$1
-  node=$2
-  recompute=$3
-  compute=$4
-
-  echo "Checking engine stats for node $node : recompute - \
-$recompute : compute - $compute"
-
-  node_stat=$(as $hv ovn-appctl -t ovn-controller inc-engine/show-stats $node)
-  # node_stat will be of this format :
-  #     - Node: logical_flow_output - recompute: 3 - compute: 0 - cancel: 0
-  node_recompute_ct=$(echo $node_stat | cut -d '-' -f2 | cut -d ':' -f2)
-  node_compute_ct=$(echo $node_stat | cut -d '-' -f3 | cut -d ':' -f2)
-
-  if [[ "$recompute" == "norecompute" ]]; then
-    # node should not be recomputed
-    echo "Expecting $node recompute count - $node_recompute_ct to be 0"
-    check test "$node_recompute_ct" -eq "0"
-  else
-    echo "Expecting $node recompute count - $node_recompute_ct not to be 0"
-    check test "$node_recompute_ct" -ne "0"
-  fi
-
-  if [[ "$compute" == "nocompute" ]]; then
-    # node should not be computed
-    echo "Expecting $node compute count - $node_compute_ct to be 0"
-    check test "$node_compute_ct" -eq "0"
-  else
-    echo "Expecting $node compute count - $node_compute_ct not to be 0"
-    check test "$node_compute_ct" -ne "0"
-  fi
-}
-m4_divert_pop([PREPARE_TESTS])
-
 OVN_FOR_EACH_NORTHD([
 AT_SETUP([ovn-controller - ovn-bridge-mappings])
 AT_KEYWORDS([ovn])
@@ -121,7 +73,7 @@ check_patches
 # Create a localnet port, but we should still have no patch ports, as they
 # won't be created until there's a localnet port on a logical switch with
 # another logical port bound to this chassis.
-check_uuid ovn-sbctl \
+ovn-sbctl \
     -- --id=@dp101 create Datapath_Binding tunnel_key=101 external_ids:name=dp101 \
     -- create Port_Binding datapath=@dp101 logical_port=localnet1 tunnel_key=1 \
         type=localnet options:network_name=physnet1
@@ -129,7 +81,7 @@ check_patches
 
 # Create a localnet port on a logical switch with a port bound to this chassis.
 # Now we should get some patch ports created.
-check_uuid ovn-sbctl \
+ovn-sbctl \
     -- --id=@dp102 create Datapath_Binding tunnel_key=102 external_ids:name=dp102 \
     -- create Port_Binding datapath=@dp102 logical_port=localnet2 tunnel_key=1 \
         type=localnet options:network_name=physnet1 \
@@ -238,7 +190,7 @@ AT_CHECK([test "${expected_iface_types}" = "${chassis_iface_types}"])
 
 # Change the value of other_config:iface-types using ovn-sbctl.
 # ovn-controller should again set it back to proper one.
-check ovn-sbctl set Chassis ${sysid} other_config:iface-types="foo"
+ovn-sbctl set Chassis ${sysid} other_config:iface-types="foo"
 OVS_WAIT_UNTIL([
     chassis_iface_types=$(ovn-sbctl get Chassis ${sysid} other_config:iface-types | sed -e 's/\"//g')
     echo "chassis_iface_types = ${chassis_iface_types}"
@@ -332,7 +284,7 @@ check_tunnel_property () {
 }
 
 # create "empty" chassis. vxlan is used here as a stub
-check ovn-sbctl chassis-add fakechassis vxlan 192.168.0.2
+ovn-sbctl chassis-add fakechassis vxlan 192.168.0.2
 
 # See if we switch to Geneve as the first choice when it is available
 # With multi-VTEP support we support tunnels with different IPs to the
@@ -347,15 +299,15 @@ OVS_WAIT_UNTIL([check_tunnel_property type geneve])
 
 # change geneve to stt and check that tun interface was deleted and there is
 # no stt encap on the second chassis, only vxlan
-check ovn-sbctl set encap ${encap_uuid} type=stt
+ovn-sbctl set encap ${encap_uuid} type=stt
 OVS_WAIT_WHILE([check_tunnel_property type stt])
 OVS_WAIT_UNTIL([check_tunnel_property type vxlan])
 
 # change back to geneve
-check ovn-sbctl set encap ${encap_uuid} type=geneve
+ovn-sbctl set encap ${encap_uuid} type=geneve
 
 # Check that changes within an encap row are propagated
-check ovn-sbctl set encap ${encap_uuid} ip=192.168.0.2
+ovn-sbctl set encap ${encap_uuid} ip=192.168.0.2
 OVS_WAIT_UNTIL([check_tunnel_property options:remote_ip "\"192.168.0.2\""])
 
 # Change the type on the OVS side and check than OVN fixes it
@@ -442,7 +394,7 @@ ovn_attach n1 br-phys 192.168.0.1
 
 OVS_WAIT_UNTIL([test xhv = x`ovn-sbctl --columns name --bare find chassis`])
 # Delete the chassis "hv"
-check ovn-sbctl chassis-del hv
+ovn-sbctl chassis-del hv
 # ovn-controller should recreate its chassis row.
 OVS_WAIT_UNTIL([test xhv = x`ovn-sbctl --columns name --bare find chassis`])
 
@@ -482,56 +434,6 @@ OVS_WAIT_UNTIL([test x0 = x`ovn-sbctl --columns nb_cfg --bare find chassis`])
 OVN_CLEANUP([hv])
 AT_CLEANUP
 ])
-
-# Checks that when ovn-controller increments the nb_cfg value in the
-# Chassis_Private table each hv receives Chassis_Private update messages.
-# NOTE: Only run this test once, it's relevant only for the case when
-# monitor_all is set to 'true'.
-AT_SETUP([ovn-controller - Chassis_Private processing with conditional monitoring disabled])
-AT_KEYWORDS([ovn])
-ovn_start
-
-net_add n1
-sim_add hv1
-as hv1
-check ovs-vsctl add-br br-phys
-ovn_attach n1 br-phys 192.168.0.11
-
-sim_add hv2
-as hv2
-check ovs-vsctl add-br br-phys
-ovn_attach n1 br-phys 192.168.0.12
-
-as hv1
-check ovs-vsctl set open . external_ids:ovn-monitor-all=true
-as hv2
-check ovs-vsctl set open . external_ids:ovn-monitor-all=true
-
-# Wait until ovn-monitor-all is processed by ovn-controller.
-wait_row_count Chassis 1 name=hv1 other_config:ovn-monitor-all=true
-wait_row_count Chassis 1 name=hv2 other_config:ovn-monitor-all=true
-
-# Enable debug for check the received messages.
-as hv1
-check ovn-appctl -t ovn-controller vlog/set dbg
-as hv2
-check ovn-appctl -t ovn-controller vlog/set dbg
-
-# Bump the NB_Global nb_cfg value.
-check ovn-nbctl --wait=hv sync
-
-nb_cfg=$(fetch_column nb:NB_Global options:nb_cfg)
-
-# Both chassis should receive all Chassis_Private notifications.
-AT_CHECK([grep -c "Chassis_Private.*nb_cfg\":${nb_cfg}" hv1/ovn-controller.log], [0], [dnl
-2
-])
-AT_CHECK([grep -c "Chassis_Private.*nb_cfg\":${nb_cfg}" hv2/ovn-controller.log], [0], [dnl
-2
-])
-
-OVN_CLEANUP([hv1],[hv2])
-AT_CLEANUP
 
 # check that nb_cfg overflow cases handled properly
 AT_SETUP([ovn-controller - overflow the nb_cfg value across the tables])
@@ -919,7 +821,7 @@ no_tos_options="{csum=\"true\", key=flow, remote_ip=\"192.168.0.2\"}"
 
 #
 # Start off with a remote chassis supporting geneve
-check ovn-sbctl chassis-add fakechassis geneve 192.168.0.2
+ovn-sbctl chassis-add fakechassis geneve 192.168.0.2
 OVS_WAIT_UNTIL([check_tunnel_property type geneve])
 
 tos_option=$(ovs-vsctl get interface ovn-fakech-0 options)
@@ -1014,11 +916,6 @@ check ovn-nbctl lrp-add lr0 rp-ls1 00:00:01:01:02:03 192.168.1.254/24
 
 OVS_WAIT_UNTIL([as hv1 ovs-ofctl dump-flows br-int | grep table=40 | grep -q "reg15=0x${port},metadata=0x${meta}"])
 
-# Check we have a full recompute if type column is updated
-check as hv1 ovn-appctl -t ovn-controller inc-engine/clear-stats
-check ovn-nbctl --wait=hv lsp-set-type ls0-rp localnet
-check_controller_engine_stats hv1 physical_flow_output recompute nocompute
-
 OVN_CLEANUP([hv1])
 AT_CLEANUP
 ])
@@ -1051,7 +948,7 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as1
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as1' drop
 
 # Add IPs to as1 for 10 times, 1 IP each time.
@@ -1224,7 +1121,7 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as1
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as1 && tcp && tcp.dst == {111, 222, 333}' drop
 
 # Add IPs to as1 for 10 times, 1 IP each time.
@@ -1418,8 +1315,8 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
-check_uuid ovn-nbctl create address_set name=as2
+ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as2
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as1 && ip4.dst == $as2' drop
 
 # Add IPs to as1 and as2, with some of the IPs overlapping
@@ -1573,8 +1470,8 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
-check_uuid ovn-nbctl create address_set name=as2
+ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as2
 
 # OR on different fields
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && (ip4.src == $as1 || ip4.dst == $as2)' drop
@@ -1669,8 +1566,8 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
-check_uuid ovn-nbctl create address_set name=as2
+ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as2
 
 # OR on the same field
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == {$as1, $as2}' drop
@@ -1774,7 +1671,7 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as1
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as1 && ip4.dst == $as1' drop
 
 # Add IPs to as1 for 10 times, 1 IP each time.
@@ -1961,8 +1858,8 @@ read_counter() {
 # 2 ASes, each has 3 IPs, no overlapping.
 # 2 ACLs, each should generate a conjunction, and 1 overlapping tcp.dst
 # generating a flow with combined conjunctions.
-check_uuid ovn-nbctl create address_set name=as1 addresses=10.0.0.11,10.0.0.12,10.0.0.13
-check_uuid ovn-nbctl create address_set name=as2 addresses=10.0.0.21,10.0.0.22,10.0.0.23
+ovn-nbctl create address_set name=as1 addresses=10.0.0.11,10.0.0.12,10.0.0.13
+ovn-nbctl create address_set name=as2 addresses=10.0.0.21,10.0.0.22,10.0.0.23
 check ovn-nbctl acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as1 && tcp && tcp.dst == {101, 102}' drop
 check ovn-nbctl acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as2 && tcp && tcp.dst == {201, 202}' drop
 
@@ -2078,7 +1975,7 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as1
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && eth.src == $as1' drop
 
 # Add MACs to as1 for 5 times.
@@ -2159,7 +2056,7 @@ read_counter() {
     ovn-appctl -t ovn-controller coverage/read-counter $1
 }
 
-check_uuid ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as1
 check ovn-nbctl --wait=hv acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip6.src == $as1' drop
 
 # Add IPs to as1 for 5 times, 1 IP each time.
@@ -2231,7 +2128,7 @@ check ovn-nbctl lsp-add ls1 ls1-lp1 \
 wait_for_ports_up
 ovn-appctl -t ovn-controller vlog/set file:dbg
 
-check_uuid ovn-nbctl create address_set name=as1 addresses=8.8.8.8
+ovn-nbctl create address_set name=as1 addresses=8.8.8.8
 check ovn-nbctl acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as1' drop
 check ovn-nbctl --wait=hv sync
 AT_CHECK([ovs-ofctl dump-flows br-int table=46 | grep -c "priority=1100"], [0], [1
@@ -2367,9 +2264,6 @@ OVS_WAIT_UNTIL([grep -q 'wait-before-clear' hv1/ovn-controller.log])
 OVS_WAIT_UNTIL([test 0 = $(ovs-ofctl dump-flows br-int | grep -F 10.1.2.4 | grep -cvF 2.2.2.2)])
 
 # Check in the middle of the wait.
-# Wait for ovn-controller to claim the port as it might cause some lflow_run.
-OVS_WAIT_UNTIL([test 2 = $(grep -c 'Claiming lport ls1-lp1 for this chassis' hv1/ovn-controller.log)])
-
 lflow_run_1=$(ovn-appctl -t ovn-controller coverage/read-counter lflow_run)
 AT_CHECK([ovs-ofctl dump-flows br-int | grep -F 10.1.2.3], [0], [ignore])
 
@@ -2919,7 +2813,7 @@ ovn_attach n1 br-phys 192.168.0.1
 check ovn-nbctl --wait=sb sync
 wait_row_count Chassis 1 name=hv1
 
-check ovn-sbctl chassis-add fakechassis geneve 192.168.0.2
+ovn-sbctl chassis-add fakechassis geneve 192.168.0.2
 fakech_tunnel=ovn-fakech-0
 OVS_WAIT_UNTIL([ovs-vsctl list port $fakech_tunnel])
 port_uuid=$(ovs-vsctl get port $fakech_tunnel _uuid)
@@ -2977,7 +2871,7 @@ acl_action=$(ovn-debug lflow-stage-to-oftable ls_out_acl_action)
 dp_key=$(printf "%x" $(fetch_column datapath tunnel_key external_ids:name=ls1))
 port_key=$(printf "%x" $(fetch_column port_binding tunnel_key logical_port=ls1-lp1))
 
-check_uuid ovn-nbctl create address_set name=as1
+ovn-nbctl create address_set name=as1
 check ovn-nbctl acl-add ls1 to-lport 100 'outport == "ls1-lp1" && ip4.src == $as1' drop
 check ovn-nbctl add address_set as1 addresses 10.0.0.0/24
 check ovn-nbctl --wait=hv sync
@@ -3012,117 +2906,4 @@ priority=1100,ip,reg15=0x1,metadata=0x1,nw_src=10.0.0.4 actions=load:0x1->OXM_OF
 ])
 
 OVN_CLEANUP([hv1])
-AT_CLEANUP
-
-AT_SETUP([ovn-controller - LB remove after disconnect])
-ovn_start
-
-net_add n1
-sim_add hv1
-as hv1
-check ovs-vsctl add-br br-phys
-ovn_attach n1 br-phys 192.168.0.1
-check ovs-vsctl -- add-port br-int vif1 -- \
-    set interface vif1 external-ids:iface-id=lsp
-
-check ovs-vsctl set Open_vSwitch . external-ids:ovn-remote-probe-interval="5000"
-
-check ovn-nbctl ls-add ls
-check ovn-nbctl lsp-add ls lsp \
--- lsp-set-addresses lsp "f0:00:00:00:00:01 172.16.0.10"
-
-check ovn-nbctl lb-add lb 192.168.100.100 172.16.0.10
-check ovn-nbctl ls-lb-add ls lb
-
-wait_for_ports_up
-check ovn-nbctl --wait=hv sync
-
-sleep_sb
-OVS_WAIT_UNTIL([grep -q 'OVNSB commit failed' hv1/ovn-controller.log])
-
-sleep_controller hv1
-wake_up_sb
-
-ovn-nbctl lb-del lb
-
-wake_up_controller hv1
-check ovn-nbctl --wait=hv sync
-
-OVN_CLEANUP([hv1
-/no response to inactivity probe after .* seconds, disconnecting/d])
-AT_CLEANUP
-
-AT_SETUP([ovn-controller - br-int flow table prefixes])
-AT_KEYWORDS([ovn-controller prefixes])
-ovn_start
-
-net_add n1
-sim_add hv1
-ovs-vsctl add-br br-phys
-
-dnl Stop the database server before starting ovn-controller and convert the
-dnl schema to support only 3 prefixes.
-OVS_APP_EXIT_AND_WAIT([ovsdb-server])
-AT_CHECK([sed 's/"max": 4}/"max": 3}/' $ovs_srcdir/vswitchd/vswitch.ovsschema > new_schema])
-AT_CHECK([ovsdb-tool convert hv1/conf.db new_schema])
-start_daemon ovsdb-server --remote=punix:db.sock
-
-dnl Start ovn-controller.
-ovn_attach n1 br-phys 192.168.0.20
-
-dnl Wait for exactly 3 prefixes to be configured.
-OVS_WAIT_UNTIL(
-    [grep -q 'Setting flow table prefixes: ip_src, ip_dst, ipv6_src.' \
-             hv1/ovn-controller.log])
-OVS_WAIT_FOR_OUTPUT([ovs-vsctl --columns=prefixes --bare list Flow_Table], [0], [dnl
-ip_dst ip_src ipv6_src
-])
-
-dnl Remember the row UUID.
-uuid=$(ovs-vsctl --columns=_uuid --bare list Flow_Table)
-
-dnl Stop the database server again and convert the schema back to support
-dnl up to 4 prefixes.
-OVS_APP_EXIT_AND_WAIT([ovsdb-server])
-AT_CHECK([cat $ovs_srcdir/vswitchd/vswitch.ovsschema > new_schema])
-AT_CHECK([ovsdb-tool convert hv1/conf.db new_schema])
-start_daemon ovsdb-server --remote=punix:db.sock
-
-dnl Wait for exactly 4 prefixes to be configured.
-OVS_WAIT_FOR_OUTPUT(
-    [grep -q 'Setting flow table prefixes: ip_src, ip_dst, ipv6_src, ipv6_dst.' \
-             hv1/ovn-controller.log])
-OVS_WAIT_FOR_OUTPUT([ovs-vsctl --columns=prefixes --bare list Flow_Table], [0], [dnl
-ip_dst ip_src ipv6_dst ipv6_src
-])
-
-dnl Check that the record was updated and not replaced.
-AT_CHECK([test "$(ovs-vsctl --columns=_uuid --bare list Flow_Table)" = "${uuid}"])
-
-OVN_CLEANUP([hv1])
-AT_CLEANUP
-
-AT_SETUP([ovn-controller - Start controller with empty db])
-AT_KEYWORDS([ovn])
-
-check ovsdb-tool create conf.db $ovs_srcdir/vswitchd/vswitch.ovsschema
-start_daemon ovsdb-server --remote=punix:db.sock
-start_daemon ovn-controller unix:db.sock
-
-AT_CHECK([ovsdb-client --bare dump unix:db.sock Open_vSwitch Open_vSwitch], [], [dnl
-Open_vSwitch table
-])
-check ovs-vsctl --no-wait init
-OVS_WAIT_FOR_OUTPUT([ovs-vsctl show | tail -n +2], [], [dnl
-    Bridge br-int
-        fail_mode: secure
-        datapath_type: system
-        Port br-int
-            Interface br-int
-                type: internal
-])
-
-# Gracefully terminate daemons.
-OVS_APP_EXIT_AND_WAIT([ovn-controller])
-OVS_APP_EXIT_AND_WAIT([ovsdb-server])
 AT_CLEANUP

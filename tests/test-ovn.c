@@ -1326,13 +1326,6 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
 
         puts(ds_cstr(&input));
 
-        struct lex_str exp_input;
-        if (!lexer_parse_template_string(&exp_input, ds_cstr(&input),
-                                         &template_vars, NULL)) {
-            printf("    failed to parse %s\n", ds_cstr(&input));
-            continue;
-        }
-
         ofpbuf_init(&ovnacts, 0);
 
         const struct ovnact_parse_params pp = {
@@ -1344,7 +1337,8 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
             .n_tables = 24,
             .cur_ltable = 10,
         };
-
+        struct lex_str exp_input =
+            lexer_parse_template_string(ds_cstr(&input), &template_vars, NULL);
         error = ovnacts_parse_string(lex_str_get(&exp_input), &pp, &ovnacts,
                                      &prereqs);
         if (!error) {
@@ -1382,9 +1376,6 @@ test_parse_actions(struct ovs_cmdl_context *ctx OVS_UNUSED)
                 .in_port_sec_ptable = OFTABLE_CHK_IN_PORT_SEC,
                 .out_port_sec_ptable = OFTABLE_CHK_OUT_PORT_SEC,
                 .mac_cache_use_table = OFTABLE_MAC_CACHE_USE,
-                .ct_nw_dst_load_table = OFTABLE_CT_ORIG_NW_DST_LOAD,
-                .ct_ip6_dst_load_table = OFTABLE_CT_ORIG_IP6_DST_LOAD,
-                .ct_tp_dst_load_table = OFTABLE_CT_ORIG_TP_DST_LOAD,
                 .lflow_uuid.parts =
                     { 0xaaaaaaaa, 0xbbbbbbbb, 0xcccccccc, 0xdddddddd},
                 .dp_key = 0xabcdef,

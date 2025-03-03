@@ -29,7 +29,6 @@
 #define OVN_FEATURE_LS_DPG_COLUMN "ls-dpg-column"
 #define OVN_FEATURE_CT_COMMIT_NAT_V2 "ct-commit-nat-v2"
 #define OVN_FEATURE_CT_COMMIT_TO_ZONE "ct-commit-to-zone"
-#define OVN_FEATURE_CT_NEXT_ZONE "ct-next-zone"
 
 /* OVS datapath supported features.  Based on availability OVN might generate
  * different types of openflows.
@@ -51,11 +50,9 @@ enum ovs_feature_value {
 void ovs_feature_support_destroy(void);
 bool ovs_feature_is_supported(enum ovs_feature_value feature);
 bool ovs_feature_support_run(const struct smap *ovs_capabilities,
-                             const char *br_name,
-                             const char *db_target);
+                             const char *br_name);
 bool ovs_feature_set_discovered(void);
 uint32_t ovs_feature_max_meters_get(void);
 uint32_t ovs_feature_max_select_groups_get(void);
-size_t ovs_features_max_flow_table_prefixes_get(void);
 
 #endif

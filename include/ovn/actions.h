@@ -128,9 +128,6 @@ struct collector_set_ids;
     OVNACT(CHK_LB_AFF,        ovnact_result)          \
     OVNACT(SAMPLE,            ovnact_sample)          \
     OVNACT(MAC_CACHE_USE,     ovnact_null)            \
-    OVNACT(CT_ORIG_NW_DST,    ovnact_result)          \
-    OVNACT(CT_ORIG_IP6_DST,   ovnact_result)          \
-    OVNACT(CT_ORIG_TP_DST,    ovnact_result)          \
 
 /* enum ovnact_type, with a member OVNACT_<ENUM> for each action. */
 enum OVS_PACKED_ENUM ovnact_type {
@@ -260,7 +257,6 @@ struct ovnact_push_pop {
 /* OVNACT_CT_NEXT. */
 struct ovnact_ct_next {
     struct ovnact ovnact;
-    bool dnat_zone;
     uint8_t ltable;                /* Logical table ID of next table. */
 };
 
@@ -414,11 +410,10 @@ struct ovnact_set_queue {
     uint16_t queue_id;
 };
 
-/* OVNACT_DNS_LOOKUP, OVNACT_CHK_LB_HAIRPIN, OVNACT_CHK_LB_HAIRPIN_REPLY,
- * OVNACT_CT_ORIG_NW_DST, CT_ORIG_IP6_DST, CT_ORIG_TP_DST */
+/* OVNACT_DNS_LOOKUP, OVNACT_CHK_LB_HAIRPIN, OVNACT_CHK_LB_HAIRPIN_REPLY. */
 struct ovnact_result {
     struct ovnact ovnact;
-    struct expr_field dst;      /* destination field. */
+    struct expr_field dst;      /* 1-bit destination field. */
 };
 
 /* OVNACT_LOG. */
@@ -587,21 +582,13 @@ void *ovnact_put(struct ofpbuf *, enum ovnact_type, size_t len);
 OVNACTS
 #undef OVNACT
 
-/* List of OVN logical action opcodes.
- *
- * This macro is used directly only internally by this header and actions.c,
- * but the list is still of interest to developers.
- *
- * Each ACTION_OPCODE invocation has the <ENUM> parameter, used below in the
- * enum definition of ACTION_OPCODE_<ENUM>, and elsewhere.
- */
-#define ACTION_OPCODES                                                        \
+enum action_opcode {
     /* "arp { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(ARP)                                                        \
-                                                                              \
+     */
+    ACTION_OPCODE_ARP,
+
     /* "put_arp(port, ip, mac)"
      *
      * Arguments are passed through the packet metadata and data, as follows:
@@ -609,9 +596,9 @@ OVNACTS
      *     MFF_REG0 = ip
      *     MFF_LOG_INPORT = port
      *     MFF_ETH_SRC = mac
-     */                                                                       \
-    ACTION_OPCODE(PUT_ARP)                                                    \
-                                                                              \
+     */
+    ACTION_OPCODE_PUT_ARP,
+
     /* "result = put_dhcp_opts(offer_ip, option, ...)".
      *
      * Arguments follow the action_header, in this format:
@@ -619,15 +606,15 @@ OVNACTS
      *   - A 32-bit integer specifying a bit offset within the result field.
      *   - The 32-bit DHCP offer IP.
      *   - Any number of DHCP options.
-     */                                                                       \
-    ACTION_OPCODE(PUT_DHCP_OPTS)                                              \
-                                                                              \
+     */
+    ACTION_OPCODE_PUT_DHCP_OPTS,
+
     /* "nd_na { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(ND_NA)                                                      \
-                                                                              \
+     */
+    ACTION_OPCODE_ND_NA,
+
     /* "put_nd(port, ip6, mac)"
      *
      * Arguments are passed through the packet metadata and data, as follows:
@@ -635,149 +622,144 @@ OVNACTS
      *     MFF_XXREG0 = ip6
      *     MFF_LOG_INPORT = port
      *     MFF_ETH_SRC = mac
-     */                                                                       \
-    ACTION_OPCODE(PUT_ND)                                                     \
-                                                                              \
+     */
+    ACTION_OPCODE_PUT_ND,
+
     /* "result = put_dhcpv6_opts(option, ...)".
      *
      * Arguments follow the action_header, in this format:
      *   - A 32-bit or 64-bit OXM header designating the result field.
      *   - A 32-bit integer specifying a bit offset within the result field.
      *   - Any number of DHCPv6 options.
-     */                                                                       \
-    ACTION_OPCODE(PUT_DHCPV6_OPTS)                                            \
-                                                                              \
+     */
+    ACTION_OPCODE_PUT_DHCPV6_OPTS,
+
     /* "result = dns_lookup()".
      * Arguments follow the action_header, in this format:
      *   - A 32-bit or 64-bit OXM header designating the result field.
      *   - A 32-bit integer specifying a bit offset within the result field.
      *
-     */                                                                       \
-    ACTION_OPCODE(DNS_LOOKUP)                                                 \
-                                                                              \
+     */
+    ACTION_OPCODE_DNS_LOOKUP,
+
     /* "log(arguments)".
      *
      * Arguments are as follows:
      *   - An 8-bit verdict.
      *   - An 8-bit severity.
      *   - A variable length string containing the name.
-     */                                                                       \
-    ACTION_OPCODE(LOG)                                                        \
-                                                                              \
+     */
+    ACTION_OPCODE_LOG,
+
     /* "result = put_nd_ra_opts(option, ...)".
      * Arguments follow the action_header, in this format:
      *   - A 32-bit or 64-bit OXM header designating the result field.
      *   - A 32-bit integer specifying a bit offset within the result field.
      *   - Any number of ICMPv6 options.
-     */                                                                       \
-    ACTION_OPCODE(PUT_ND_RA_OPTS)                                             \
-                                                                              \
+     */
+    ACTION_OPCODE_PUT_ND_RA_OPTS,
+
     /* "nd_ns { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(ND_NS)                                                      \
-                                                                              \
+     */
+    ACTION_OPCODE_ND_NS,
+
     /* "icmp4 { ...actions... } and icmp6 { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(ICMP)                                                       \
-                                                                              \
+     */
+    ACTION_OPCODE_ICMP,
+
     /* "tcp_reset { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(TCP_RESET)                                                  \
-                                                                              \
+     */
+    ACTION_OPCODE_TCP_RESET,
+
     /* "nd_na_router { ...actions... }" with rso flag 'ND_RSO_ROUTER' set.
-     *
-     * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(ND_NA_ROUTER)                                               \
-                                                                              \
-    /* MTU value (to put in the icmp4 header field - frag_mtu) follow the
-     * action header. */                                                      \
-    ACTION_OPCODE(PUT_ICMP4_FRAG_MTU)                                         \
-                                                                              \
+        *
+        * The actions, in OpenFlow 1.3 format, follow the action_header.
+        */
+    ACTION_OPCODE_ND_NA_ROUTER,
+
+     /* MTU value (to put in the icmp4 header field - frag_mtu) follow the
+     * action header. */
+    ACTION_OPCODE_PUT_ICMP4_FRAG_MTU,
+
     /* "icmp4_error { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(ICMP4_ERROR)                                                \
-                                                                              \
-    /* "trigger_event (event_type)" */                                        \
-    ACTION_OPCODE(EVENT)                                                      \
+     */
+    ACTION_OPCODE_ICMP4_ERROR,
+
+    /* "trigger_event (event_type)" */
+    ACTION_OPCODE_EVENT,
+
     /* "igmp".
      *
      * Snoop IGMP, learn the multicast participants
-     */                                                                       \
-    ACTION_OPCODE(IGMP)                                                       \
-                                                                              \
+     */
+    ACTION_OPCODE_IGMP,
+
     /* "bind_vport(vport, vport_parent)".
      *
      *   'vport' follows the action_header, in the format - 32-bit field.
      *   'vport_parent' is passed through the packet metadata as
      *    MFF_LOG_INPORT.
-     */                                                                       \
-    ACTION_OPCODE(BIND_VPORT)                                                 \
-                                                                              \
+     */
+    ACTION_OPCODE_BIND_VPORT,
+
     /* "handle_svc_check(port)"."
      *
      * Arguments are passed through the packet metadata and data, as follows:
      *
      *     MFF_LOG_INPORT = port
-     */                                                                       \
-    ACTION_OPCODE(HANDLE_SVC_CHECK)                                           \
-                                                                              \
+     */
+    ACTION_OPCODE_HANDLE_SVC_CHECK,
     /* handle_dhcpv6_reply { ...actions ...}."
      *
      *  The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(DHCP6_SERVER)                                               \
-                                                                              \
+     */
+    ACTION_OPCODE_DHCP6_SERVER,
+
     /* "icmp6_error { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(ICMP6_ERROR)                                                \
-                                                                              \
+     */
+    ACTION_OPCODE_ICMP6_ERROR,
+
     /* MTU value (to put in the icmp6 header field - frag_mtu) follow the
-     * action header. */                                                      \
-    ACTION_OPCODE(PUT_ICMP6_FRAG_MTU)                                         \
-                                                                              \
+     * action header. */
+    ACTION_OPCODE_PUT_ICMP6_FRAG_MTU,
+
     /* "reject { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(REJECT)                                                     \
-                                                                              \
+     */
+    ACTION_OPCODE_REJECT,
+
     /* handle_bfd_msg { ...actions ...}."
      *
      *  The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(BFD_MSG)                                                    \
-                                                                              \
+     */
+    ACTION_OPCODE_BFD_MSG,
+
     /* "sctp_abort { ...actions... }".
      *
      * The actions, in OpenFlow 1.3 format, follow the action_header.
-     */                                                                       \
-    ACTION_OPCODE(SCTP_ABORT)                                                 \
-                                                                              \
-    /* put_fdb(inport, eth.src). */                                           \
-    ACTION_OPCODE(PUT_FDB)                                                    \
-                                                                              \
-    /* activation_strategy_rarp() */                                          \
-    ACTION_OPCODE(ACTIVATION_STRATEGY_RARP)                                   \
-                                                                              \
-    /* multicast group split buffer action. */                                \
-    ACTION_OPCODE(MG_SPLIT_BUF)
+     */
+    ACTION_OPCODE_SCTP_ABORT,
 
+    /* put_fdb(inport, eth.src).
+     */
+    ACTION_OPCODE_PUT_FDB,
 
-enum action_opcode {
-#define ACTION_OPCODE(ENUM) ACTION_OPCODE_##ENUM,
-    ACTION_OPCODES
-#undef ACTION_OPCODE
+    /* activation_strategy_rarp() */
+    ACTION_OPCODE_ACTIVATION_STRATEGY_RARP,
+
+    /* multicast group split buffer action. */
+    ACTION_OPCODE_MG_SPLIT_BUF,
 };
 
 /* Header. */
@@ -916,12 +898,6 @@ struct ovnact_encode_params {
                                     this determines which CT zone to use */
     uint32_t mac_cache_use_table; /* OpenFlow table for 'mac_cache_use'
                                    * to resubmit. */
-    uint32_t ct_nw_dst_load_table; /* OpenFlow table for 'ct_nw_dst'
-                                    *  to resubmit. */
-    uint32_t ct_ip6_dst_load_table; /* OpenFlow table for 'ct_ip6_dst'
-                                     *  to resubmit. */
-    uint32_t ct_tp_dst_load_table; /* OpenFlow table for 'ct_tp_dst'
-                                    *  to resubmit. */
 };
 
 void ovnacts_encode(const struct ovnact[], size_t ovnacts_len,

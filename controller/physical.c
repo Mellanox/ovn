@@ -698,7 +698,7 @@ put_replace_chassis_mac_flows(const struct simap *ct_zones,
         put_resubmit(OFTABLE_LOG_INGRESS_PIPELINE, ofpacts_p);
         ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 180,
                         rport_binding->header_.uuid.parts[0],
-                        &match, ofpacts_p, &localnet_port->header_.uuid);
+                        &match, ofpacts_p, hc_uuid);
 
         /* Provide second search criteria, i.e localnet port's
          * vlan ID for conjunction flow */
@@ -706,7 +706,6 @@ put_replace_chassis_mac_flows(const struct simap *ct_zones,
         ofpbuf_clear(ofpacts_p);
         match_init_catchall(&match);
 
-        match_set_in_port(&match, ofport);
         if (tag) {
             match_set_dl_vlan(&match, htons(tag), 0);
         } else {
@@ -719,7 +718,7 @@ put_replace_chassis_mac_flows(const struct simap *ct_zones,
         conj->clause = 1;
         ofctrl_add_flow(flow_table, OFTABLE_PHY_TO_LOG, 180,
                         rport_binding->header_.uuid.parts[0],
-                        &match, ofpacts_p, &localnet_port->header_.uuid);
+                        &match, ofpacts_p, hc_uuid);
     }
 }
 
@@ -1257,12 +1256,6 @@ reply_imcp_error_if_pkt_too_big(struct ovn_desired_flow_table *flow_table,
     ofpact_put_set_field(
         &inner_ofpacts, mf_from_id(MFF_LOG_FLAGS), &value, &mask);
 
-    /* inport <-> outport */
-    put_stack(MFF_LOG_INPORT, ofpact_put_STACK_PUSH(&inner_ofpacts));
-    put_stack(MFF_LOG_OUTPORT, ofpact_put_STACK_PUSH(&inner_ofpacts));
-    put_stack(MFF_LOG_INPORT, ofpact_put_STACK_POP(&inner_ofpacts));
-    put_stack(MFF_LOG_OUTPORT, ofpact_put_STACK_POP(&inner_ofpacts));
-
     /* eth.src <-> eth.dst */
     put_stack(MFF_ETH_DST, ofpact_put_STACK_PUSH(&inner_ofpacts));
     put_stack(MFF_ETH_SRC, ofpact_put_STACK_PUSH(&inner_ofpacts));
@@ -1640,8 +1633,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
                 sbrec_port_binding_by_name, binding->parent_port);
 
             if (parent_port
-                && !lport_can_bind_on_this_chassis(chassis,
-                                                   parent_port)) {
+                && !lport_can_bind_on_this_chassis(chassis, parent_port)) {
                 /* Even though there is an ofport for this container
                  * parent port, it is requested on different chassis ignore
                  * this container port.
@@ -1844,8 +1836,7 @@ consider_port_binding(struct ovsdb_idl_index *sbrec_port_binding_by_name,
             put_drop(debug, OFTABLE_CHECK_LOOPBACK, ofpacts_p);
             match_outport_dp_and_port_keys(&match, dp_key, port_key);
             match_set_reg_masked(&match, MFF_LOG_FLAGS - MFF_REG0,
-                                 MLF_LOCAL_ONLY,
-                                 MLF_LOCAL_ONLY | MLF_OVERRIDE_LOCAL_ONLY);
+                                 MLF_LOCAL_ONLY, MLF_LOCAL_ONLY);
             ofctrl_add_flow(flow_table, OFTABLE_CHECK_LOOPBACK, 160,
                             binding->header_.uuid.parts[0], &match,
                             ofpacts_p, &binding->header_.uuid);
@@ -2364,9 +2355,8 @@ physical_handle_flows_for_lport(const struct sbrec_port_binding *pb,
     struct local_datapath *ldp =
         get_local_datapath(p_ctx->local_datapaths,
                            pb->datapath->tunnel_key);
-    if (!strcmp(pb->type, "external") ||
-        !strcmp(pb->type, "patch") || !strcmp(pb->type, "l3gateway")) {
-        /* Those lports have a dependency on the localnet port.
+    if (!strcmp(pb->type, "external")) {
+        /* External lports have a dependency on the localnet port.
          * We need to remove the flows of the localnet port as well
          * and re-consider adding the flows for it.
          */
@@ -2376,55 +2366,47 @@ physical_handle_flows_for_lport(const struct sbrec_port_binding *pb,
         }
     }
 
-    if (sbrec_port_binding_is_updated(
-            pb, SBREC_PORT_BINDING_COL_ADDITIONAL_CHASSIS) || removed) {
-        physical_multichassis_reprocess(pb, p_ctx, flow_table);
-    }
+    if (ldp) {
+        bool multichassis_state_changed = (
+            !!pb->additional_chassis ==
+            !!shash_find(&ldp->multichassis_ports, pb->logical_port)
+        );
+        if (multichassis_state_changed) {
+            if (pb->additional_chassis) {
+                add_local_datapath_multichassis_port(
+                    ldp, pb->logical_port, pb);
+            } else {
+                remove_local_datapath_multichassis_port(
+                    ldp, pb->logical_port);
+            }
 
-    /* Always update pb and the configured peer for patch ports. */
-    if (!removed || !strcmp(pb->type, "patch")) {
-        physical_eval_port_binding(p_ctx, pb, flow_table);
-    }
+            struct sbrec_port_binding *target =
+                sbrec_port_binding_index_init_row(
+                    p_ctx->sbrec_port_binding_by_datapath);
+            sbrec_port_binding_index_set_datapath(target, ldp->datapath);
 
-    if (!strcmp(pb->type, "patch")) {
-        if (removed) {
-            ofctrl_remove_flows(flow_table, &pb->header_.uuid);
+            const struct sbrec_port_binding *port;
+            SBREC_PORT_BINDING_FOR_EACH_EQUAL (
+                    port, target, p_ctx->sbrec_port_binding_by_datapath) {
+                ofctrl_remove_flows(flow_table, &port->header_.uuid);
+                physical_eval_port_binding(p_ctx, port, flow_table);
+            }
+            sbrec_port_binding_index_destroy_row(target);
         }
-        const struct sbrec_port_binding *peer =
-            get_binding_peer(p_ctx->sbrec_port_binding_by_name, pb);
-        if (peer) {
-            physical_eval_port_binding(p_ctx, peer, flow_table);
-            if (removed) {
-                ofctrl_remove_flows(flow_table, &peer->header_.uuid);
+    }
+
+    if (!removed) {
+        physical_eval_port_binding(p_ctx, pb, flow_table);
+        if (!strcmp(pb->type, "patch")) {
+            const struct sbrec_port_binding *peer =
+                get_binding_peer(p_ctx->sbrec_port_binding_by_name, pb);
+            if (peer) {
+                physical_eval_port_binding(p_ctx, peer, flow_table);
             }
         }
     }
 
     return true;
-}
-
-void
-physical_multichassis_reprocess(const struct sbrec_port_binding *pb,
-                                struct physical_ctx *p_ctx,
-                                struct ovn_desired_flow_table *flow_table)
-{
-    struct sbrec_port_binding *target =
-            sbrec_port_binding_index_init_row(
-                    p_ctx->sbrec_port_binding_by_datapath);
-    sbrec_port_binding_index_set_datapath(target, pb->datapath);
-
-    const struct sbrec_port_binding *port;
-    SBREC_PORT_BINDING_FOR_EACH_EQUAL (port, target,
-                                       p_ctx->sbrec_port_binding_by_datapath) {
-        /* Ignore PBs that were already reprocessed. */
-        if (!sset_add(&p_ctx->reprocessed_pbs, port->logical_port)) {
-            continue;
-        }
-
-        ofctrl_remove_flows(flow_table, &port->header_.uuid);
-        physical_eval_port_binding(p_ctx, port, flow_table);
-    }
-    sbrec_port_binding_index_destroy_row(target);
 }
 
 void
@@ -2744,43 +2726,6 @@ physical_run(struct physical_ctx *p_ctx,
      * Drop packets that do not match previous flows.
      */
     add_default_drop_flow(p_ctx, OFTABLE_LOG_TO_PHY, flow_table);
-
-    /* Table 81, 82 and 83
-     * Match on ct.trk and ct.est and store the ct_nw_dst, ct_ip6_dst and
-     * ct_tp_dst in the registers. */
-    uint32_t ct_state = OVS_CS_F_TRACKED | OVS_CS_F_ESTABLISHED;
-    match_init_catchall(&match);
-    ofpbuf_clear(&ofpacts);
-
-    /* Add the flow:
-     * match = (ct.trk && ct.est), action = (reg8 = ct_tp_dst)
-     * table = 83
-     */
-    match_set_ct_state_masked(&match, ct_state, ct_state);
-    put_move(MFF_CT_TP_DST, 0,  MFF_LOG_CT_ORIG_TP_DST_PORT, 0, 16, &ofpacts);
-    ofctrl_add_flow(flow_table, OFTABLE_CT_ORIG_TP_DST_LOAD, 100, 0, &match,
-                    &ofpacts, hc_uuid);
-
-    /* Add the flow:
-     * match = (ct.trk && ct.est && ip4), action = (reg4 = ct_nw_dst)
-     * table = 81
-     */
-    ofpbuf_clear(&ofpacts);
-    match_set_dl_type(&match, htons(ETH_TYPE_IP));
-    put_move(MFF_CT_NW_DST, 0,  MFF_LOG_CT_ORIG_NW_DST_ADDR, 0, 32, &ofpacts);
-    ofctrl_add_flow(flow_table, OFTABLE_CT_ORIG_NW_DST_LOAD, 100, 0, &match,
-                    &ofpacts, hc_uuid);
-
-    /* Add the flow:
-     * match = (ct.trk && ct.est && ip6), action = (xxreg0 = ct_ip6_dst)
-     * table = 82
-     */
-    ofpbuf_clear(&ofpacts);
-    match_set_dl_type(&match, htons(ETH_TYPE_IPV6));
-    put_move(MFF_CT_IPV6_DST, 0,  MFF_LOG_CT_ORIG_IP6_DST_ADDR, 0,
-             128, &ofpacts);
-    ofctrl_add_flow(flow_table, OFTABLE_CT_ORIG_IP6_DST_LOAD, 100, 0, &match,
-                    &ofpacts, hc_uuid);
 
     ofpbuf_uninit(&ofpacts);
 }
