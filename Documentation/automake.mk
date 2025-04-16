@@ -41,6 +41,7 @@ DOC_SOURCE = \
 	Documentation/ref/index.rst \
 	Documentation/faq/index.rst \
 	Documentation/faq/contributing.rst \
+	Documentation/internals/contributing/inclusive-language.rst \
 	Documentation/faq/general.rst \
 	Documentation/internals/index.rst \
 	Documentation/internals/authors.rst \
